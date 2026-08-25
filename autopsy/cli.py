@@ -78,7 +78,7 @@ def main(argv=None):
     if v["survives_scaffold"] is not None:
         print(f"  {T.amber}Survives a new chemical series: {v['survives_scaffold']:.2f}{T.end}")
     if v["learned_beyond_lookup"] is not None:
-        print(f"  {T.cyan}Learned beyond lookup: {v['learned_beyond_lookup']:.2f}{T.end}")
+        print(f"  {T.cyan}Learned beyond lookup: {v['learned_beyond_lookup']:.3f}{T.end}")
     if v["temporal"] is not None:
         print(f"  {T.cyan}Holds forward in time: {v['temporal']:.2f}{T.end}")
     if v["permutation_floor"] is not None and v["permutation_floor"] > 0.05:

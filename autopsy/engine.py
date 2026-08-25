@@ -368,7 +368,7 @@ def _headline(reported, lookup_pct, survives, learned, temporal, floor):
     if survives is not None:
         parts.append(f"On disjoint chemical series performance holds at {survives:.2f}.")
     if learned is not None:
-        parts.append(f"Beyond the lookup baseline, the model's own contribution is {learned:.2f}.")
+        parts.append(f"Beyond the lookup baseline, the model's own contribution is {learned:.3f}.")
     if temporal is not None:
         parts.append(f"Forward in time it holds {temporal:.2f}.")
     if floor is not None and floor > 0.05:
@@ -391,7 +391,12 @@ def _readout(reported, lookup_rand, lookup_pct, survives, nn_scaf, learned, temp
                       "note": "Performance on genuinely new chemical series — what generalises beyond the training scaffolds."})
     # learned structure
     if learned is not None:
-        flag = "NET" if learned > 0.1 else "THIN"
+        # Calibrated on BACE-1: the model's own contribution there is 0.147,
+        # and that reads as thin — a fifth of the 0.72 it reports. A 0.1 cut
+        # called it NET, which oversold the same number the tool exists to
+        # deflate. Above 0.2 the model is adding structure a lookup table
+        # cannot; below it, it is mostly recognising analogues.
+        flag = "NET" if learned > 0.2 else "THIN"
         cards.append({"signal": "Learned structure", "flag": flag, "value": learned,
                       "note": "Scaffold performance minus the scaffold-split lookup: the only structure the model added over copying its nearest analogue."})
     # temporal

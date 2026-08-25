@@ -85,7 +85,10 @@ def _strip(verdict) -> str:
              ("LEARNED", verdict["learned_beyond_lookup"], C["cyan"])]
     out = ""
     for k, val, t in cells:
-        disp = "——" if val is None else f"{val:.2f}"
+        # LEARNED carries three decimals wherever it appears — it is small
+        # enough that the third one is signal, not noise
+        dp = 3 if k == "LEARNED" else 2
+        disp = "——" if val is None else f"{val:.{dp}f}"
         out += (f'<div style="background:{C["panel"]};padding:11px 12px">'
                 f'<div style="font-size:9.5px;font-weight:600;letter-spacing:.14em;color:{C["textDim"]};margin-bottom:5px">{k}</div>'
                 f'<div style="font-family:monospace;font-size:20px;color:{t}">{disp}</div></div>')
@@ -102,7 +105,7 @@ def _readout(cards) -> str:
         elif c.get("value") is None:
             disp = "——"
         else:
-            disp = f'{c["value"]:.2f}'
+            disp = f'{c["value"]:.{3 if c["signal"] == "Learned structure" else 2}f}'
         out += (
             f'<div style="margin-bottom:16px">'
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
