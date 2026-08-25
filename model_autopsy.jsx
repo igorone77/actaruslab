@@ -8,37 +8,39 @@ import { useAutopsy, flagColor, engineReachable } from "./ui_connector.jsx";
 // Murcko series); load a CSV and it runs the same engine on your data.
 // ═══════════════════════════════════════════════════════════════════
 
-// The BACE-1 audit, as shipped in bace_report.html — the state the page
-// opens in, and what it falls back to until a dataset is loaded.
+// The BACE-1 audit — the state the page opens in, and what it falls back to
+// until a dataset is loaded. Numbers are the engine's own output for
+// bace.csv (k=5, seed=0), so benchmark mode and bace_report.html agree to
+// the last decimal; the prose is hand-written for this dataset.
 const DEMO = {
   source: "BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER",
   rungs: [
-    { key: "xgb_rand", label: "XGBoost",     cond: "random split",    r2: 0.720, rmse: 0.710, rho: 0.827, kind: "reported" },
-    { key: "nn_rand",  label: "1-NN lookup", cond: "random split",    r2: 0.576, rmse: 0.874, rho: 0.757, kind: "lookup" },
-    { key: "xgb_scaf", label: "XGBoost",     cond: "scaffold split",  r2: 0.593, rmse: 0.856, rho: 0.744, kind: "survives" },
-    { key: "nn_scaf",  label: "1-NN lookup", cond: "scaffold split",  r2: 0.448, rmse: 0.997, rho: 0.696, kind: "lookup" },
-    { key: "perm",     label: "Permutation", cond: "shuffled target", r2: -0.219, rmse: 1.482, rho: -0.012, kind: "floor" },
+    { key: "xgb_rand", label: "XGBoost", cond: "random split", r2: 0.722, rmse: 0.708, rho: 0.828, kind: "reported" },
+    { key: "nn_rand", label: "1-NN lookup", cond: "random split", r2: 0.576, rmse: 0.874, rho: 0.757, kind: "lookup" },
+    { key: "xgb_scaf", label: "XGBoost", cond: "scaffold split", r2: 0.595, rmse: 0.854, rho: 0.745, kind: "survives" },
+    { key: "nn_scaf", label: "1-NN lookup", cond: "scaffold split", r2: 0.448, rmse: 0.997, rho: 0.696, kind: "lookup" },
+    { key: "perm", label: "Permutation", cond: "shuffled target", r2: -0.224, rmse: 1.485, rho: -0.026, kind: "floor" },
   ],
-  reported: 0.720, lookupRand: 0.576, survives: 0.593, nnScaf: 0.448,
-  learned: 0.146,          // engine-canonical, 3 dp
+  reported: 0.722, lookupRand: 0.576, survives: 0.595, nnScaf: 0.448,
+  learned: 0.147,
   lookupPct: 80,
   headline: null,          // demo keeps the hand-written verdict below
   readout: [
     { signal: "Similarity leakage", flag: "SEVERE", value_pct: 80,
       note: "A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." },
-    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.593,
+    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.595,
       note: "On disjoint chemical series the model holds 0.59 — real, but below the reported figure. This is what generalises to new chemistry." },
-    { signal: "Learned structure", flag: "THIN", value: 0.146,
+    { signal: "Learned structure", flag: "THIN", value: 0.147,
       note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond copying its nearest analogue." },
-    { signal: "Permutation floor", flag: "CLEAN", value: -0.219,
-      note: "Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." },
     { signal: "Temporal test", flag: "N/A", value: null,
       note: "Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." },
+    { signal: "Permutation floor", flag: "CLEAN", value: -0.224,
+      note: "Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." },
   ],
   specimen: { n_compounds: 1513, n_scaffold_series: 377, n_singleton_series: 200,
               largest_series: 63, largest_series_pct: 4.2, target_mean: 6.522,
               target_sd: 1.342, exact_duplicate_smiles: 0 },
-  meta: "ECFP4 · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL",
+  meta: "ECFP4 · 2048 bit · XGBoost (400 trees, depth 6) · 5-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED 0",
 };
 
 // engine AutopsyResult -> the shape this page renders
