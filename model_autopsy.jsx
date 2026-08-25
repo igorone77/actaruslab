@@ -1,22 +1,64 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useAutopsy, flagColor } from "./ui_connector.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // MODEL AUTOPSY — ActarusLab · NEUTRA-language build
 // Forensic report for a QSAR model. Every number measured, not
-// simulated: BACE-1 inhibition (pIC50), 1513 compounds, 377
-// Bemis–Murcko scaffold series. XGBoost / 1-NN Tanimoto / permutation.
+// simulated. Opens on the BACE-1 audit (1513 compounds, 377 Bemis–
+// Murcko series); load a CSV and it runs the same engine on your data.
 // ═══════════════════════════════════════════════════════════════════
 
-const RUNGS = [
-  { key: "xgb_rand", label: "XGBoost",     cond: "random split",   r2: 0.720, rmse: 0.710, rho: 0.827, kind: "reported" },
-  { key: "nn_rand",  label: "1-NN lookup", cond: "random split",   r2: 0.576, rmse: 0.874, rho: 0.757, kind: "lookup" },
-  { key: "xgb_scaf", label: "XGBoost",     cond: "scaffold split", r2: 0.593, rmse: 0.856, rho: 0.744, kind: "survives" },
-  { key: "nn_scaf",  label: "1-NN lookup", cond: "scaffold split", r2: 0.448, rmse: 0.997, rho: 0.696, kind: "lookup" },
-  { key: "perm",     label: "Permutation", cond: "shuffled target",r2: -0.219,rmse: 1.482, rho: -0.012,kind: "floor" },
-];
-const REPORTED = 0.720, LOOKUP_RAND = 0.576, SURVIVES = 0.593, NN_SCAF = 0.448;
-const LEARNED = 0.146; // engine-canonical: scaffold 0.593 − scaffold-lookup 0.448 (deterministic folds)
-const LOOKUP_PCT = Math.round((LOOKUP_RAND / REPORTED) * 100);
+// The BACE-1 audit, as shipped in bace_report.html — the state the page
+// opens in, and what it falls back to until a dataset is loaded.
+const DEMO = {
+  source: "BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER",
+  rungs: [
+    { key: "xgb_rand", label: "XGBoost",     cond: "random split",    r2: 0.720, rmse: 0.710, rho: 0.827, kind: "reported" },
+    { key: "nn_rand",  label: "1-NN lookup", cond: "random split",    r2: 0.576, rmse: 0.874, rho: 0.757, kind: "lookup" },
+    { key: "xgb_scaf", label: "XGBoost",     cond: "scaffold split",  r2: 0.593, rmse: 0.856, rho: 0.744, kind: "survives" },
+    { key: "nn_scaf",  label: "1-NN lookup", cond: "scaffold split",  r2: 0.448, rmse: 0.997, rho: 0.696, kind: "lookup" },
+    { key: "perm",     label: "Permutation", cond: "shuffled target", r2: -0.219, rmse: 1.482, rho: -0.012, kind: "floor" },
+  ],
+  reported: 0.720, lookupRand: 0.576, survives: 0.593, nnScaf: 0.448,
+  learned: 0.146,          // engine-canonical, 3 dp
+  lookupPct: 80,
+  headline: null,          // demo keeps the hand-written verdict below
+  readout: [
+    { signal: "Similarity leakage", flag: "SEVERE", value_pct: 80,
+      note: "A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." },
+    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.593,
+      note: "On disjoint chemical series the model holds 0.59 — real, but below the reported figure. This is what generalises to new chemistry." },
+    { signal: "Learned structure", flag: "THIN", value: 0.146,
+      note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond copying its nearest analogue." },
+    { signal: "Permutation floor", flag: "CLEAN", value: -0.219,
+      note: "Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." },
+    { signal: "Temporal test", flag: "N/A", value: null,
+      note: "Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." },
+  ],
+  specimen: { n_compounds: 1513, n_scaffold_series: 377, n_singleton_series: 200,
+              largest_series: 63, largest_series_pct: 4.2, target_mean: 6.522,
+              target_sd: 1.342, exact_duplicate_smiles: 0 },
+  meta: "ECFP4 · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL",
+};
+
+// engine AutopsyResult -> the shape this page renders
+function fromResult(res, source) {
+  const v = res.verdict, m = res.meta;
+  return {
+    source: source.toUpperCase(),
+    rungs: res.ladder.filter((r) => r.r2 !== null).map((r, i) => ({
+      key: `${r.kind}-${i}`, label: r.model, cond: r.condition.split(" · ")[0],
+      r2: r.r2, rmse: r.rmse, rho: r.spearman, kind: r.kind,
+    })),
+    reported: v.reported, lookupRand: v.lookup_random,
+    survives: v.survives_scaffold, nnScaf: v.lookup_scaffold,
+    learned: v.learned_beyond_lookup, lookupPct: v.lookup_pct_of_reported,
+    headline: v.headline,
+    readout: res.readout,
+    specimen: res.specimen,
+    meta: `${m.featurisation} · ${m.k_folds}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED ${m.seed}`,
+  };
+}
 
 const C = {
   bg0: "#0A1418", bg1: "#0E1D22", panel: "#0C1A20", panelHi: "#112A31",
@@ -27,6 +69,8 @@ const C = {
 };
 const mono = "'IBM Plex Mono', ui-monospace, monospace";
 const sans = "'Barlow', 'Inter', system-ui, sans-serif";
+
+const num = (v, dp = 2) => (v == null ? "——" : v.toFixed(dp));
 
 const Pill = ({ children, tone = C.green }) => (
   <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 600, letterSpacing: "0.04em",
@@ -39,38 +83,53 @@ const Bar = ({ frac, tone = C.cyan, track = C.edgeSoft }) => (
       transition: "width 0.9s cubic-bezier(.2,.7,.2,1)" }} />
   </div>
 );
-const traceY = (r2, top, h) => { const lo = -0.3, hi = 0.78; return top + (1 - (r2 - lo) / (hi - lo)) * h; };
 
 export default function ModelAutopsyNeutra() {
   const [revealed, setRevealed] = useState(0);
   const [verdict, setVerdict] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [file, setFile] = useState(null);
+  const [cols, setCols] = useState({ smiles: "smiles", y: "pIC50", date: "" });
   const timers = useRef([]);
+  const { result, status, error, runFromFile } = useAutopsy();
+
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  const run = () => {
+  const D = result ? fromResult(result, file ? file.name : "uploaded data") : DEMO;
+  const busy = status === "running";
+
+  const reveal = (rungs) => {
     timers.current.forEach(clearTimeout); timers.current = [];
-    setVerdict(false); setRevealed(0); setRunning(true);
-    RUNGS.forEach((_, i) => timers.current.push(setTimeout(() => setRevealed(i + 1), 480 + i * 600)));
-    timers.current.push(setTimeout(() => { setVerdict(true); setRunning(false); }, 480 + RUNGS.length * 600 + 260));
+    setVerdict(false); setRevealed(0);
+    rungs.forEach((_, i) => timers.current.push(setTimeout(() => setRevealed(i + 1), 480 + i * 600)));
+    timers.current.push(setTimeout(() => setVerdict(true), 480 + rungs.length * 600 + 260));
   };
+
+  const run = async () => {
+    if (!file) return reveal(DEMO.rungs);          // no dataset: replay the benchmark
+    timers.current.forEach(clearTimeout); timers.current = [];
+    setVerdict(false); setRevealed(0);
+    try {
+      const data = await runFromFile(file, { smiles: cols.smiles, y: cols.y, date: cols.date || undefined });
+      reveal(data.ladder.filter((r) => r.r2 !== null));
+    } catch { /* surfaced through `error` below */ }
+  };
+
+  const label = busy ? "● AUTOPSY RUNNING…" : file ? "▶ RUN AUTOPSY" : "▶ REPLAY BENCHMARK";
 
   return (
     <div style={{ minHeight: "100vh", boxSizing: "border-box",
       background: `radial-gradient(120% 90% at 50% -10%, ${C.bg1} 0%, ${C.bg0} 60%, #06090B 100%)`,
       color: C.text, fontFamily: sans, padding: "clamp(14px,2.5vw,30px)" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Barlow:ital,wght@0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
       <style>{`
         .autopsy-grid {
           display: grid;
           grid-template-columns: minmax(230px,1fr) minmax(360px,1.9fr) minmax(250px,1.15fr);
           gap: 14px; align-items: start;
         }
-        @media (max-width: 920px) {
-          .autopsy-grid { grid-template-columns: 1fr; }
-        }
+        @media (max-width: 920px) { .autopsy-grid { grid-template-columns: 1fr; } }
         * { box-sizing: border-box; }
-        button:focus-visible { outline: 2px solid ${C.cyan}; outline-offset: 2px; }
+        button:focus-visible, label:focus-within, input:focus-visible { outline: 2px solid ${C.cyan}; outline-offset: 2px; }
+        @media (prefers-reduced-motion: reduce) { * { transition-duration: .01ms !important; animation-duration: .01ms !important; } }
       `}</style>
 
       <div style={{ maxWidth: 1320, margin: "0 auto", border: `1px solid ${C.edge}`, borderRadius: 14,
@@ -93,7 +152,7 @@ export default function ModelAutopsyNeutra() {
                 <Dot /> <span style={{ fontFamily: sans, fontWeight: 500, fontSize: 14, color: C.textDim }}>Survival</span>
               </div>
             </div>
-            <Ghost label="EVIDENCE" /><Ghost label="SPECIMEN" />
+            <Ghost label={result ? "LIVE" : "BENCHMARK"} on={!!result} /><Ghost label="SPECIMEN" />
           </div>
         </header>
 
@@ -104,60 +163,80 @@ export default function ModelAutopsyNeutra() {
         <div className="autopsy-grid">
 
           <Panel title="CAUSE OF DEATH">
-            <Dial value={LOOKUP_PCT} unit="%" caption="OF SCORE IS LOOKUP" sub="reproducible by nearest-neighbour" tone={C.red} big fill={LOOKUP_PCT / 100} />
+            <Dial value={D.lookupPct == null ? "——" : D.lookupPct} unit={D.lookupPct == null ? "" : "%"} caption="OF SCORE IS LOOKUP" sub="reproducible by nearest-neighbour" tone={C.red} big fill={(D.lookupPct ?? 0) / 100} />
             <div style={{ height: 14 }} />
-            <Dial value={SURVIVES.toFixed(2)} unit="" caption="SURVIVES NEW SERIES" sub="scaffold-disjoint R²" tone={C.amber} fill={SURVIVES / 0.78} />
+            <Dial value={num(D.survives)} unit="" caption="SURVIVES NEW SERIES" sub="scaffold-disjoint R²" tone={C.amber} fill={(D.survives ?? 0) / 0.78} />
           </Panel>
 
           <Panel title="POST-MORTEM · DISTANCE FROM THE HONEST SCORE">
-            <LadderChart revealed={revealed} />
+            <LadderChart rungs={D.rungs} revealed={revealed} reported={D.reported} />
+
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <Action primary onClick={run} label={running ? "● RECORDING…" : "▶ RUN AUTOPSY"} disabled={running} />
-              <Action onClick={() => { setRevealed(RUNGS.length); setVerdict(true); }} label="↧ REVEAL ALL" />
+              <FilePick file={file} onPick={(f) => { setFile(f); setRevealed(0); setVerdict(false); }} disabled={busy} />
+              <Action primary onClick={run} label={label} disabled={busy} />
+              <Action onClick={() => { setRevealed(D.rungs.length); setVerdict(true); }} label="↧ REVEAL ALL" disabled={busy} />
             </div>
+
+            {file && <ColumnForm cols={cols} setCols={setCols} disabled={busy} />}
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 1, marginTop: 14, border: `1px solid ${C.edge}`, borderRadius: 8, overflow: "hidden", background: C.edge }}>
-              {[["REPORTED", REPORTED.toFixed(2), C.green],["LOOKUP", LOOKUP_RAND.toFixed(2), C.red],["SURVIVES", SURVIVES.toFixed(2), C.amber],["LEARNED", LEARNED.toFixed(3), C.cyan]].map(([k, v, t]) => (
+              {[["REPORTED", num(D.reported), C.green], ["LOOKUP", num(D.lookupRand), C.red],
+                ["SURVIVES", num(D.survives), C.amber], ["LEARNED", num(D.learned, 3), C.cyan]].map(([k, v, t]) => (
                 <div key={k} style={{ background: C.panel, padding: "11px 12px" }}>
                   <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 600, letterSpacing: "0.14em", color: C.textDim, marginBottom: 5 }}>{k}</div>
                   <div style={{ fontFamily: mono, fontSize: 20, fontWeight: 500, color: t }}>{v}</div>
                 </div>
               ))}
             </div>
-            {verdict && (
+
+            {error && (
+              <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 8, background: C.panel, border: `1px solid ${C.redDim}`, borderLeft: `2px solid ${C.red}` }}>
+                <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em", color: C.red, marginBottom: 8 }}>AUTOPSY FAILED</div>
+                <div style={{ fontFamily: sans, fontSize: 13.5, lineHeight: 1.55, color: C.text }}>{error}</div>
+              </div>
+            )}
+
+            {verdict && !error && (
               <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 8, background: C.panel, border: `1px solid ${C.redDim}`, borderLeft: `2px solid ${C.red}` }}>
                 <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em", color: C.red, marginBottom: 8 }}>VERDICT</div>
                 <div style={{ fontFamily: sans, fontSize: 13.5, lineHeight: 1.55, color: C.text }}>
-                  The reported <b style={{ color: C.ice }}>0.72</b> is not a lie — it measures the wrong thing. It scores how well the model
-                  recognises molecules it has effectively already seen. What predicts the next campaign is
-                  <b style={{ color: C.amber, fontFamily: mono }}> 0.59</b>; the model's own contribution over a lookup table is
-                  <b style={{ color: C.cyan, fontFamily: mono }}> {LEARNED.toFixed(3)}</b>. Put those two numbers in the due diligence, not the headline.
+                  {D.headline ? D.headline : (
+                    <>
+                      The reported <b style={{ color: C.ice }}>{num(D.reported)}</b> is not a lie — it measures the wrong thing. It scores how well the model
+                      recognises molecules it has effectively already seen. What predicts the next campaign is
+                      <b style={{ color: C.amber, fontFamily: mono }}> {num(D.survives)}</b>; the model's own contribution over a lookup table is
+                      <b style={{ color: C.cyan, fontFamily: mono }}> {num(D.learned, 3)}</b>. Put those two numbers in the due diligence, not the headline.
+                    </>
+                  )}
                 </div>
               </div>
             )}
           </Panel>
 
           <Panel title="FORENSIC READOUT">
-            <Readout head="SIMILARITY LEAKAGE" pill={<Pill tone={C.red}>SEVERE</Pill>} value={`${LOOKUP_PCT}%`} tone={C.red} frac={LOOKUP_PCT / 100}
-              note="A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." />
-            <Readout head="SCAFFOLD TRANSFER" pill={<Pill tone={C.amber}>PARTIAL</Pill>} value={SURVIVES.toFixed(2)} tone={C.amber} frac={SURVIVES / 0.78}
-              note="On disjoint chemical series the model holds 0.59 — real, but below the reported figure. This is what generalises to new chemistry." />
-            <Readout head="LEARNED STRUCTURE" pill={<Pill tone={C.cyan}>THIN</Pill>} value={LEARNED.toFixed(3)} tone={C.cyan} frac={LEARNED / 0.78}
-              note="Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond copying its nearest analogue." />
-            <Readout head="PERMUTATION FLOOR" pill={<Pill tone={C.green}>CLEAN</Pill>} value="−0.22" tone={C.green} frac={0.06}
-              note="Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." />
-            <Readout head="TEMPORAL TEST" pill={<Pill tone={C.mut}>N/A</Pill>} value="——" tone={C.mut} frac={0}
-              note="Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." />
+            {D.readout.map((c) => {
+              const tone = flagColor(c.flag);
+              const value = c.value_pct != null ? `${c.value_pct}%` : c.value == null ? "——" : c.value.toFixed(c.signal === "Learned structure" ? 3 : 2);
+              const frac = c.value_pct != null ? c.value_pct / 100 : c.value == null ? 0 : Math.max(0.04, c.value / 0.78);
+              return <Readout key={c.signal} head={c.signal.toUpperCase()} pill={<Pill tone={tone}>{c.flag}</Pill>}
+                              value={value} tone={tone} frac={frac} note={c.note} />;
+            })}
           </Panel>
         </div>
 
         <div style={{ marginTop: 14 }}>
           <Panel title="SPECIMEN X-RAY · WHY THE HONEST SPLIT MATTERS">
             <div style={{ fontFamily: sans, fontSize: 13, color: C.textDim, marginBottom: 14, maxWidth: 900, lineHeight: 1.55 }}>
-              The tell is in the composition: <b style={{ color: C.amber }}>200 of 377 scaffold series appear only once</b>. A random split
-              scatters near-identical analogues across train and test, so the model grades its own copies — that is where the phantom 0.72 comes from.
+              The tell is in the composition: <b style={{ color: C.amber }}>{D.specimen.n_singleton_series} of {D.specimen.n_scaffold_series} scaffold series appear only once</b>. A random split
+              scatters near-identical analogues across train and test, so the model grades its own copies — that is where the phantom {num(D.reported)} comes from.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 1, border: `1px solid ${C.edge}`, borderRadius: 8, overflow: "hidden", background: C.edge }}>
-              {[["Compounds", "1,513", "on the slab"],["Scaffold series", "377", "Bemis–Murcko cores"],["Singleton series", "200", "seen once — only memorisable"],["Largest series", "63", "one core = 4% of data"],["Target pIC50", "6.52", "± 1.34 sd · well-spread"],["Duplicates", "0", "no trivial contamination"]].map(([k, v, s], i) => (
+              {[["Compounds", D.specimen.n_compounds.toLocaleString("en-US"), "on the slab"],
+                ["Scaffold series", String(D.specimen.n_scaffold_series), "Bemis–Murcko cores"],
+                ["Singleton series", String(D.specimen.n_singleton_series), "seen once — only memorisable"],
+                ["Largest series", String(D.specimen.largest_series), `one core = ${Math.round(D.specimen.largest_series_pct)}% of data`],
+                ["Target mean", D.specimen.target_mean.toFixed(2), `± ${D.specimen.target_sd.toFixed(2)} sd`],
+                ["Duplicates", String(D.specimen.exact_duplicate_smiles), D.specimen.exact_duplicate_smiles ? "repeat measurements" : "no trivial contamination"]].map(([k, v, s], i) => (
                 <div key={k} style={{ background: C.panel, padding: "13px 14px" }}>
                   <div style={{ fontFamily: sans, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.08em", color: C.textDim, marginBottom: 6 }}>{k.toUpperCase()}</div>
                   <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 500, color: i === 2 ? C.amber : C.ice, lineHeight: 1 }}>{v}</div>
@@ -169,10 +248,44 @@ export default function ModelAutopsyNeutra() {
         </div>
 
         <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, fontFamily: mono, fontSize: 10.5, color: C.mut, letterSpacing: "0.02em" }}>
-          <span>ECFP4 · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL</span>
-          <span style={{ color: C.textDim }}>SPECIMEN · BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER · <span style={{ color: C.cyanDim }}>secure yes · local yes · sent no</span></span>
+          <span>{D.meta}</span>
+          <span style={{ color: C.textDim }}>SPECIMEN · {D.source} · <span style={{ color: C.cyanDim }}>secure yes · local yes · sent no</span></span>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FilePick({ file, onPick, disabled }) {
+  return (
+    <label style={{ fontFamily: mono, fontSize: 12, fontWeight: 600, letterSpacing: "0.08em",
+      cursor: disabled ? "default" : "pointer", flex: "1 1 auto", minWidth: 130, padding: "12px 16px",
+      borderRadius: 8, color: file ? C.ice : C.text, background: C.panelHi,
+      border: `1px solid ${file ? C.cyanDim : C.edge}`, opacity: disabled ? 0.7 : 1,
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 8, textAlign: "center",
+      overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+      ⇱ {file ? file.name : "LOAD CSV"}
+      <input type="file" accept=".csv,text/csv" disabled={disabled} style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onPick(f); }} />
+    </label>
+  );
+}
+
+function ColumnForm({ cols, setCols, disabled }) {
+  const field = (key, label, placeholder) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 5, flex: "1 1 130px" }}>
+      <span style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 600, letterSpacing: "0.14em", color: C.textDim }}>{label}</span>
+      <input value={cols[key]} disabled={disabled} placeholder={placeholder}
+        onChange={(e) => setCols({ ...cols, [key]: e.target.value })}
+        style={{ fontFamily: mono, fontSize: 12, color: C.ice, background: C.bg0,
+          border: `1px solid ${C.edge}`, borderRadius: 6, padding: "8px 10px", minWidth: 0 }} />
+    </label>
+  );
+  return (
+    <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+      {field("smiles", "SMILES COLUMN", "smiles")}
+      {field("y", "ACTIVITY COLUMN", "pIC50")}
+      {field("date", "DATE COLUMN · OPTIONAL", "document_year")}
     </div>
   );
 }
@@ -180,11 +293,11 @@ export default function ModelAutopsyNeutra() {
 function Dot({ on }) {
   return <span style={{ width: 8, height: 8, borderRadius: 8, background: on ? C.cyan : "transparent", border: `1px solid ${on ? C.cyan : C.textDim}`, boxShadow: on ? `0 0 8px ${C.cyan}` : "none", display: "inline-block" }} />;
 }
-function Ghost({ label }) {
+function Ghost({ label, on }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-      <span style={{ width: 6, height: 6, borderRadius: 6, border: `1px solid ${C.mut}` }} />
-      <span style={{ fontFamily: sans, fontSize: 11, fontWeight: 600, letterSpacing: "0.16em", color: C.mut }}>{label}</span>
+      <span style={{ width: 6, height: 6, borderRadius: 6, border: `1px solid ${on ? C.cyan : C.mut}`, background: on ? C.cyan : "transparent" }} />
+      <span style={{ fontFamily: sans, fontSize: 11, fontWeight: 600, letterSpacing: "0.16em", color: on ? C.cyanDim : C.mut }}>{label}</span>
     </span>
   );
 }
@@ -245,28 +358,33 @@ function Dial({ value, unit, caption, sub, tone, big, fill }) {
     </div>
   );
 }
-function LadderChart({ revealed }) {
+function LadderChart({ rungs, revealed, reported }) {
   const W = 640, H = 300, padL = 46, padR = 74, padT = 26, padB = 52;
   const bandH = H - padT - padB;
-  const stepX = (W - padL - padR) / (RUNGS.length - 1);
+  const stepX = (W - padL - padR) / Math.max(1, rungs.length - 1);
+  // The benchmark band, widened only if a loaded dataset falls outside it.
+  const vals = rungs.map((r) => r.r2);
+  const lo = Math.min(-0.3, Math.floor(Math.min(...vals) * 4) / 4);
+  const hi = Math.max(0.78, Math.ceil(Math.max(...vals) * 4) / 4);
   const x = (i) => padL + i * stepX;
-  const y = (r2) => traceY(r2, padT, bandH);
+  const y = (r2) => padT + (1 - (r2 - lo) / (hi - lo)) * bandH;
+  const gridlines = [0.75, 0.5, 0.25, 0, -0.25].filter((g) => g >= lo && g <= hi);
   const colFor = (k) => k === "reported" ? C.green : k === "survives" ? C.amber : k === "floor" ? C.mut : C.red;
-  const pts = RUNGS.slice(0, revealed).map((r, i) => `${x(i)},${y(r.r2)}`).join(" ");
+  const pts = rungs.slice(0, revealed).map((r, i) => `${x(i)},${y(r.r2)}`).join(" ");
   return (
     <div style={{ background: C.bg0, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "6px 4px" }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
-        {[0.75, 0.5, 0.25, 0, -0.25].map((g) => (
+        {gridlines.map((g) => (
           <g key={g}>
             <line x1={padL} x2={W - padR} y1={y(g)} y2={y(g)} stroke={C.edgeSoft} strokeWidth="1" strokeDasharray="2 5" />
             <text x={padL - 8} y={y(g) + 3.5} textAnchor="end" fontFamily={mono} fontSize="10" fill={C.mut}>{g.toFixed(2)}</text>
           </g>
         ))}
-        <line x1={padL} x2={W - padR} y1={y(REPORTED)} y2={y(REPORTED)} stroke={C.green} strokeWidth="1" strokeDasharray="1 6" opacity="0.55" />
+        {reported != null && <line x1={padL} x2={W - padR} y1={y(reported)} y2={y(reported)} stroke={C.green} strokeWidth="1" strokeDasharray="1 6" opacity="0.55" />}
         {revealed > 1 && <polyline points={pts} fill="none" stroke={C.red} strokeWidth="2" opacity="0.55" style={{ transition: "all .4s ease" }} />}
-        {RUNGS.slice(0, revealed).map((r, i) => {
-          const anchor = i === 0 ? "start" : i === RUNGS.length - 1 ? "end" : "middle";
-          const lx = i === 0 ? x(i) - 22 : i === RUNGS.length - 1 ? x(i) + 22 : x(i);
+        {rungs.slice(0, revealed).map((r, i) => {
+          const anchor = i === 0 ? "start" : i === rungs.length - 1 ? "end" : "middle";
+          const lx = i === 0 ? x(i) - 22 : i === rungs.length - 1 ? x(i) + 22 : x(i);
           const vy = i === 0 ? y(r.r2) + 20 : y(r.r2) - 12;
           const vx = i === 0 ? x(i) + 22 : x(i);
           return (

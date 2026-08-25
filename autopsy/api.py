@@ -11,16 +11,22 @@ Endpoints
 GET  /health                 -> liveness
 POST /autopsy/csv            -> multipart file upload + column names -> full result JSON
 POST /autopsy/records        -> JSON body {records:[{smiles,y,date?}], ...} -> full result JSON
+GET  /                       -> the NEUTRA UI, if web/static has been built
 
-CORS is open by default for local development; lock it down before deploying.
+Serving the UI from this app is what makes it usable in a browser with one
+command: the page and the API share an origin, so nothing needs CORS. The
+CORS middleware below only matters for a UI hosted somewhere else, and is
+dev-open — lock it to the UI origin before deploying.
 """
 from __future__ import annotations
 import io
+from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .engine import run_autopsy, AutopsyError
@@ -88,3 +94,21 @@ def _run(df: pd.DataFrame, smiles: str, y: str, date: Optional[str], k: int):
     except Exception as e:  # unexpected — surface as 500 but don't leak internals
         raise HTTPException(status_code=500, detail=f"autopsy failed: {type(e).__name__}")
     return res.to_dict()
+
+
+# ── the UI ────────────────────────────────────────────────────────────
+# Mounted last so it cannot shadow the routes above. Absent until the
+# bundle is built (`npm install && npm run build`), in which case the API
+# still serves normally — only the browser front end is missing.
+_STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+
+if (_STATIC / "app.js").exists():
+    app.mount("/", StaticFiles(directory=_STATIC, html=True), name="ui")
+else:
+    @app.get("/")
+    def ui_not_built():
+        return {
+            "detail": "UI bundle not built",
+            "fix": "npm install && npm run build, then restart",
+            "api": ["/health", "/autopsy/csv", "/autopsy/records", "/docs"],
+        }

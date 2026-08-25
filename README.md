@@ -104,18 +104,51 @@ only 0.147.
 > ~0.002; the 1-NN rungs are exact.
 > `tests/test_scaffold_determinism.py` guards the split itself.
 
-## Run — API (what the NEUTRA UI calls)
+## Run — the app (browser)
 
 ```bash
-uvicorn autopsy.api:app --reload            # http://127.0.0.1:8000
+pip install -r requirements.txt
+uvicorn autopsy.api:app --reload            # open http://127.0.0.1:8000
 ```
+
+Drop a CSV on **LOAD CSV**, name the SMILES and activity columns, hit **RUN
+AUTOPSY**. The engine runs server-side and the ladder, dials, readout and
+specimen tiles all fill from the result — roughly 20 s for 1500 compounds.
+With no file loaded the page sits on the BACE-1 benchmark and **REPLAY
+BENCHMARK** just re-animates it.
+
+The same app serves the API, so the page and its backend share an origin and
+nothing needs CORS. The CORS middleware only matters for a UI hosted
+elsewhere, and is still dev-open (`*`) — lock it to the UI origin before
+putting this on a public host.
+
+### Endpoints
 
 - `GET  /health`
 - `POST /autopsy/csv`      — multipart file + `smiles`,`y`,`date?`,`k` form fields
 - `POST /autopsy/records`  — JSON `{records:[{smiles,y,date?}], k, has_date}`
+- `GET  /`                 — the UI · `GET /docs` — OpenAPI
 
-Both return the full result object (`specimen`, `ladder`, `verdict`,
-`readout`, `meta`) — the same structure the CLI and HTML report consume.
+Both autopsy endpoints return the full result object (`specimen`, `ladder`,
+`verdict`, `readout`, `meta`) — the same structure the CLI and HTML report
+consume.
+
+### Rebuilding the front end
+
+`web/static/app.js` is committed so the app runs with Python alone. After
+editing `model_autopsy.jsx` or `ui_connector.jsx`:
+
+```bash
+npm install && npm run build     # or: npm run watch
+```
+
+### Container
+
+```bash
+docker build -t model-autopsy . && docker run -p 8000:8000 model-autopsy
+```
+
+No Node in the image — it copies the built bundle.
 
 ---
 
@@ -144,6 +177,10 @@ defect — the repo's first finding was about the auditor, not the model.
 **Done — deterministic scaffold split.** Fixed in `_scaffold_folds`, with
 `bace_report.html` and the numbers above reissued from it.
 
+**Done — the app runs in a browser.** `autopsy.api` serves the NEUTRA UI at
+`/`, so one command gives you a page that takes a CSV upload and renders a
+real audit. Same origin as the API, no CORS, no second dev server.
+
 **Open — order-invariant scores.** 1-NN tie-breaking and XGBoost subsampling
 still read row order; see the determinism note above.
 
@@ -151,22 +188,20 @@ still read row order; see the determinism note above.
 
 To become the product Strikeon uses:
 
-1. **Wire the UI to the API.** The prototype (`model_autopsy.jsx`) currently
-   holds constants. Replace them with a `fetch('/autopsy/csv', …)` on file
-   upload and render `result.ladder` / `result.verdict` / `result.readout`.
-   A reference `useAutopsy()` hook is in `ui_connector.jsx`.
-2. **Deploy the API** somewhere the UI can reach (a small container). Lock
-   CORS to the UI origin — it's dev-open (`*`) right now.
-3. **Harden for their data.** Real campaign CSVs are messier than BACE:
+1. **Deploy it.** `Dockerfile` builds the whole thing; it needs a host. Lock
+   CORS to the UI origin first — it's dev-open (`*`) right now — and decide
+   whether uploads should be size-capped, since the audit is O(n²) in the
+   lookup rung and holds the request open for its duration.
+2. **Harden for their data.** Real campaign CSVs are messier than BACE:
    mixed activity units (nM vs µM), censored values (`>10000`), salts in the
    SMILES, duplicate measurements. Add a normalisation pass before the engine
    (unit harmonisation, `>`/`<` handling, desalting, aggregating replicate
    activities) — each is a known QSAR-data pitfall and each is a place a naive
    pipeline leaks.
-4. **Performance.** 1-NN Tanimoto is O(n²); fine to ~5k compounds, slow beyond.
+3. **Performance.** 1-NN Tanimoto is O(n²); fine to ~5k compounds, slow beyond.
    For larger sets, switch the lookup baseline to an approximate NN index
    (e.g. FAISS on folded fingerprints) — the *result* is what matters, the
    exact-NN guarantee isn't.
 
-Items 1–2 make it a running service. Items 3–4 make it trustworthy on data
-that isn't a clean public benchmark.
+Item 1 puts it on a URL. Items 2–3 make it trustworthy on data that isn't a
+clean public benchmark.

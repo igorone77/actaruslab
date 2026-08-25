@@ -1,17 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────
-// ui_connector.jsx — reference wiring for Claude Code
+// ui_connector.jsx — the bridge between the UI and the engine API.
 //
-// This is the bridge that turns the MODEL AUTOPSY prototype (which holds
-// hardcoded BACE constants) into a live client of the engine API.
+// model_autopsy.jsx uses `useAutopsy()` to turn a picked CSV into a real
+// audit. There is no backend in an artifact sandbox, so a page served from
+// anywhere but the API will sit on its benchmark constants.
 //
-// It is NOT meant to run in an artifact sandbox (no backend there). It is a
-// reference for the Code step: drop the engine API behind a URL, then use
-// this hook in place of the constants at the top of model_autopsy.jsx.
+// API_BASE resolves in three steps, most specific first:
+//   window.__AUTOPSY_API__   a host page pointing at a remote API
+//   VITE_AUTOPSY_API         a Vite dev server proxying elsewhere
+//   ""                       same origin — how `uvicorn autopsy.api:app`
+//                            serves it, and the path with no CORS to open
 // ─────────────────────────────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-const API_BASE = import.meta?.env?.VITE_AUTOPSY_API ?? "http://127.0.0.1:8000";
+const API_BASE =
+  (typeof window !== "undefined" && window.__AUTOPSY_API__) ||
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTOPSY_API) ||
+  "";
 
 // ── the hook the UI uses ─────────────────────────────────────────────
 // Returns { result, status, error, runFromFile, runFromRecords }.
