@@ -3,12 +3,11 @@
 numpy>=1.26,<3
 pandas>=2.0,<3
 scipy>=1.11,<2
-# scikit-learn <1.9 is a hard pin, not caution: GroupKFold changed how it assigns
-# groups to folds in 1.9.0, which repartitions the 377 BACE scaffold series and
-# moves the scaffold rungs (lookup_scaffold 0.36 -> 0.46, learned 0.26 -> 0.17).
-# The random-split and permutation rungs are unaffected. Verified by bisection:
-# 1.5.2 / 1.6.1 / 1.7.2 / 1.8.0 all reproduce the published audit; 1.9.0 does not.
-scikit-learn>=1.3,<1.9
+# NOTE: no pin here can make the scaffold rungs reproducible — GroupKFold orders
+# groups with an unstable argsort, and 200 of the 377 BACE series are tied at one
+# compound, so the partition (and lookup_scaffold with it) varies by scikit-learn
+# version AND by CPU. See tests/test_scaffold_determinism.py and the README.
+scikit-learn>=1.3,<2
 xgboost>=2.0,<4
 rdkit>=2023.9
 

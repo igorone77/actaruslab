@@ -58,15 +58,54 @@ self-contained NEUTRA-styled HTML report you can hand to a client.
 80% of the reported score is a lookup; 0.26 is learned beyond it.
 `bace_report.html` is that run; `tests/test_bace_smoke.py` re-derives it in CI.
 
-> **Reproducibility caveat.** The two scaffold rungs depend on how `GroupKFold`
-> assigns scaffold series to folds, and scikit-learn changed that assignment in
-> **1.9.0** — same 377 series, same fold sizes, different partition. On 1.9 the
-> ladder reads `scaffold 0.63 → scaffold-lookup 0.46`, i.e. *learned beyond
-> lookup* drops 0.26 → 0.17 with no change to this code. The random-split and
-> permutation rungs are identical either way. `requirements.txt` therefore pins
-> `scikit-learn<1.9`. The durable fix is to stop delegating the split: assign
-> series to folds inside the engine (sort by size, greedy fill) so the partition
-> is the engine's own and `seed` genuinely covers it.
+> **⚠ The scaffold rungs are not reproducible.** `seed` does not reach them.
+> `_scaffold_folds` delegates to scikit-learn's `GroupKFold`, which orders
+> series by size using `np.argsort(...)` — an *unstable* sort — and 200 of
+> BACE's 377 series are tied at one compound. Every tie-breaking is a valid
+> "largest series first" order, each gives a different partition into folds
+> of the same size, and which one you get depends on the scikit-learn version
+> and on the CPU (numpy 2.x selects a SIMD sort path from the host's
+> instruction set). Same code, same data, k=5, seed=0:
+>
+> | tie order | scaffold | scaffold-lookup | learned beyond lookup |
+> |---|---|---|---|
+> | ascending group id | 0.611 | 0.414 | 0.197 |
+> | descending group id | 0.633 | 0.461 | 0.172 |
+> | the box that produced `bace_report.html` | 0.622 | 0.365 | **0.257** |
+> | a GitHub Actions runner | — | 0.421 | — |
+>
+> So the headline lands anywhere in ~0.17–0.26 depending on the machine, and
+> **0.26 is one draw, not the number**. The random-split, temporal and
+> permutation rungs are unaffected — `KFold` takes an explicit `random_state`.
+> No dependency pin fixes this; a client re-running the audit on their own
+> hardware will not reproduce the report you sent them.
+>
+> **The fix** is to stop delegating the split — order the series in-engine
+> with a deterministic tie-break, so `seed` genuinely covers it:
+>
+> ```python
+> def _scaffold_folds(scaffolds, k):
+>     groups = pd.factorize(pd.Series(scaffolds))[0]
+>     k_eff = min(k, len(set(groups)))
+>     if k_eff < 2:
+>         return None, groups
+>     counts = np.bincount(groups)
+>     order = np.lexsort((np.arange(len(counts)), -counts))   # size desc, id asc
+>     weight, group_to_fold = np.zeros(k_eff), np.zeros(len(counts), dtype=int)
+>     for g in order:                       # largest series into the lightest fold
+>         f = int(np.argmin(weight)); weight[f] += counts[g]; group_to_fold[g] = f
+>     per_sample = group_to_fold[groups]
+>     return ([(np.where(per_sample != f)[0], np.where(per_sample == f)[0])
+>              for f in range(k_eff)], groups)
+> ```
+>
+> That is a behaviour change — it fixes one partition for good, and the
+> published numbers above move to the first row of the table (`scaffold 0.611
+> → scaffold-lookup 0.414`, learned 0.197), on every machine. It is left
+> undone deliberately: re-running the BACE audit and reissuing
+> `bace_report.html` is a call for whoever owns the client-facing claims.
+> `tests/test_scaffold_determinism.py` pins the defect meanwhile and will
+> start failing the moment it is fixed.
 
 ## Run — API (what the NEUTRA UI calls)
 
@@ -101,9 +140,13 @@ prototype UI stops replaying BACE and starts computing on real uploads.
 ## Status
 
 **Done — repo + CI.** `.github/workflows/ci.yml` runs the BACE regression audit
-(`reported ≈ 0.72`, `lookup_pct ≈ 80`, `lookup_scaffold ≈ 0.36`, `floor < 0`)
-plus surface smoke tests for the CLI, the HTML report and the API, on every
-push. Running the guard is what surfaced the `GroupKFold` drift noted above.
+(`reported ≈ 0.72`, `lookup_pct ≈ 80`, `floor < 0`) plus surface smoke tests for
+the CLI, the HTML report and the API, on every push. Running that guard on a
+second machine is what surfaced the scaffold-split defect above — the repo's
+first finding was about the auditor, not the model.
+
+**Open — item 0.** Decide on the scaffold-split fix before anything else here
+ships to a client, since it changes every scaffold number the tool reports.
 
 ## Next steps — the last mile
 

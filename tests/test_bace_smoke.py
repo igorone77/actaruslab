@@ -27,10 +27,8 @@ def test_bace_headline_numbers():
     assert 0.68 <= v["reported"] <= 0.75, v["reported"]
     assert 0.54 <= v["lookup_random"] <= 0.61, v["lookup_random"]
     assert 0.58 <= v["survives_scaffold"] <= 0.66, v["survives_scaffold"]
-    # the scaffold-lookup floor pins the scaffold *partition*, not just the score:
-    # it is the rung that moves if GroupKFold changes how it assigns series to folds
-    # (see the scikit-learn pin in requirements.txt)
-    assert 0.32 <= v["lookup_scaffold"] <= 0.41, v["lookup_scaffold"]
+    # NB: lookup_scaffold is deliberately not asserted to a tight band — it is not
+    # reproducible across machines. tests/test_scaffold_determinism.py explains why.
     assert v["permutation_floor"] < 0.05, v["permutation_floor"]      # floor collapses
 
     # the two headline claims
