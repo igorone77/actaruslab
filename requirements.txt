@@ -1,0 +1,13 @@
+# MODEL AUTOPSY — engine dependencies
+# pinned major versions; loosen only after re-running the BACE audit as a regression check
+numpy>=1.26,<3
+pandas>=2.0,<3
+scipy>=1.11,<2
+scikit-learn>=1.3,<2
+xgboost>=2.0,<4
+rdkit>=2023.9
+
+# service layer (optional — only needed for the API, not the CLI)
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+python-multipart>=0.0.9
