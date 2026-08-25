@@ -3,10 +3,9 @@
 numpy>=1.26,<3
 pandas>=2.0,<3
 scipy>=1.11,<2
-# NOTE: no pin here can make the scaffold rungs reproducible — GroupKFold orders
-# groups with an unstable argsort, and 200 of the 377 BACE series are tied at one
-# compound, so the partition (and lookup_scaffold with it) varies by scikit-learn
-# version AND by CPU. See tests/test_scaffold_determinism.py and the README.
+# Only KFold and the metrics are used now. The scaffold split is built in-engine
+# (see _scaffold_folds) precisely so that no scikit-learn version can move it —
+# GroupKFold ordered tied series with an unstable argsort, and no pin fixed that.
 scikit-learn>=1.3,<2
 xgboost>=2.0,<4
 rdkit>=2023.9

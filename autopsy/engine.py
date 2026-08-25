@@ -33,7 +33,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
-from sklearn.model_selection import KFold, GroupKFold
+from sklearn.model_selection import KFold
 from sklearn.metrics import r2_score, mean_squared_error
 
 from rdkit import Chem, DataStructs, RDLogger
@@ -128,11 +128,49 @@ def _random_folds(n, k, seed):
 
 
 def _scaffold_folds(scaffolds, k):
-    groups = pd.factorize(pd.Series(scaffolds))[0]
-    k_eff = min(k, len(set(groups)))
+    """Partition scaffold series across folds — deterministically.
+
+    Two decisions here used to be delegated, and both leaked nondeterminism
+    into the audit:
+
+      * group ids came from `pd.factorize`, i.e. order of first appearance,
+        so shuffling the input rows renamed the groups;
+      * fold assignment came from `GroupKFold`, which orders series by size
+        with `np.argsort(...)` — an *unstable* sort. On BACE 200 of the 377
+        series hold a single compound, so that order is one arbitrary choice
+        among many, and which one you get depends on the scikit-learn version
+        and on the CPU (numpy 2.x selects a SIMD sort path from the host's
+        instruction set). Same code, same data, different partition: the
+        scaffold-lookup rung read 0.365 on one machine and 0.421 on another.
+
+    Both are now fixed by construction. Group ids come from
+    `sorted(set(scaffolds))`, so they are a function of scaffold *content*
+    rather than row order; groups are filled largest-first with ties broken
+    by group id, into the lightest fold with ties broken by fold index. No
+    step consults an unstable sort, so the partition is a function of the
+    molecules alone — identical on any machine, and under any row ordering.
+    """
+    index = {s: i for i, s in enumerate(sorted(set(scaffolds)))}
+    groups = np.fromiter((index[s] for s in scaffolds), dtype=int, count=len(scaffolds))
+    n_groups = len(index)
+
+    k_eff = min(k, n_groups)
     if k_eff < 2:
         return None, groups
-    return list(GroupKFold(n_splits=k_eff).split(np.arange(len(groups)), groups=groups)), groups
+
+    counts = np.bincount(groups, minlength=n_groups)
+    order = sorted(range(n_groups), key=lambda g: (-int(counts[g]), g))   # size desc, id asc
+
+    weight = np.zeros(k_eff, dtype=np.int64)
+    group_to_fold = np.empty(n_groups, dtype=int)
+    for g in order:
+        f = int(np.argmin(weight))          # np.argmin -> lowest fold index on ties
+        weight[f] += counts[g]
+        group_to_fold[g] = f
+
+    per_sample = group_to_fold[groups]
+    return ([(np.where(per_sample != f)[0], np.where(per_sample == f)[0])
+             for f in range(k_eff)], groups)
 
 
 def _temporal_folds(dates, k):

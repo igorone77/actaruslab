@@ -54,58 +54,49 @@ Prints the verdict + ASCII ladder to the terminal; with `--out` writes a
 self-contained NEUTRA-styled HTML report you can hand to a client.
 
 **Verified on BACE-1** (1513 compounds, 377 scaffold series, `k=5`, `seed=0`):
-`random 0.72 → lookup 0.58 → scaffold 0.62 → scaffold-lookup 0.36 → floor −0.22`.
-80% of the reported score is a lookup; 0.26 is learned beyond it.
-`bace_report.html` is that run; `tests/test_bace_smoke.py` re-derives it in CI.
+`random 0.72 → lookup 0.58 → scaffold 0.59 → scaffold-lookup 0.45 → floor −0.22`.
+80% of the reported score is a lookup; **0.147** is learned beyond it
+(`scaffold 0.595 − scaffold-lookup 0.448`). `bace_report.html` is that run;
+`tests/test_bace_smoke.py` re-derives it in CI.
 
-> **⚠ The scaffold rungs are not reproducible.** `seed` does not reach them.
-> `_scaffold_folds` delegates to scikit-learn's `GroupKFold`, which orders
-> series by size using `np.argsort(...)` — an *unstable* sort — and 200 of
-> BACE's 377 series are tied at one compound. Every tie-breaking is a valid
-> "largest series first" order, each gives a different partition into folds
-> of the same size, and which one you get depends on the scikit-learn version
-> and on the CPU (numpy 2.x selects a SIMD sort path from the host's
-> instruction set). Same code, same data, k=5, seed=0:
+Note the ladder is no longer monotonically descending: the random-split lookup
+(0.58) now sits *above* what survives a new chemical series (0.59) by a hair.
+That shape is the finding, not a glitch — on novel chemistry the model barely
+matches a random-split lookup table, and beats the scaffold-split lookup by
+only 0.147.
+
+> **Determinism.** The scaffold split is a function of the molecules alone.
+> `_scaffold_folds` assigns group ids from `sorted(set(scaffolds))` — scaffold
+> content, not order of appearance — and fills folds largest-series-first into
+> the lightest fold, ties broken by group id and by fold index. Nothing
+> consults an unstable sort, so the same compounds give the same folds on any
+> machine and under any row ordering.
 >
-> | tie order | scaffold | scaffold-lookup | learned beyond lookup |
-> |---|---|---|---|
-> | ascending group id | 0.611 | 0.414 | 0.197 |
-> | descending group id | 0.633 | 0.461 | 0.172 |
-> | the box that produced `bace_report.html` | 0.622 | 0.365 | **0.257** |
-> | a GitHub Actions runner | — | 0.421 | — |
+> This replaced a delegation to scikit-learn's `GroupKFold`, which ordered
+> series by size with `np.argsort(...)` — an *unstable* sort — where 200 of
+> BACE's 377 series tie at one compound. Every tie-breaking was a valid
+> ordering and each produced a different partition into folds of identical
+> size, so `scaffold-lookup` read 0.365 on one machine and 0.421 on another
+> with the same library versions. `seed` never reached that decision. No
+> dependency pin fixes it; only owning the assignment does.
 >
-> So the headline lands anywhere in ~0.17–0.26 depending on the machine, and
-> **0.26 is one draw, not the number**. The random-split, temporal and
-> permutation rungs are unaffected — `KFold` takes an explicit `random_state`.
-> No dependency pin fixes this; a client re-running the audit on their own
-> hardware will not reproduce the report you sent them.
+> **Still outstanding — the scores are not yet order-invariant.** The folds
+> are, but two rungs still read the row order *inside* a fold:
 >
-> **The fix** is to stop delegating the split — order the series in-engine
-> with a deterministic tie-break, so `seed` genuinely covers it:
+> * `_nn_oof` breaks ties with `np.argmax`, i.e. by position. On BACE's
+>   scaffold folds 99 of 1513 test molecules have a tied nearest neighbour and
+>   83 of those tie between neighbours with *different* activities, so the
+>   prediction depends on which one comes first.
+> * XGBoost's `subsample`/`colsample_bytree` draw against row positions.
 >
-> ```python
-> def _scaffold_folds(scaffolds, k):
->     groups = pd.factorize(pd.Series(scaffolds))[0]
->     k_eff = min(k, len(set(groups)))
->     if k_eff < 2:
->         return None, groups
->     counts = np.bincount(groups)
->     order = np.lexsort((np.arange(len(counts)), -counts))   # size desc, id asc
->     weight, group_to_fold = np.zeros(k_eff), np.zeros(len(counts), dtype=int)
->     for g in order:                       # largest series into the lightest fold
->         f = int(np.argmin(weight)); weight[f] += counts[g]; group_to_fold[g] = f
->     per_sample = group_to_fold[groups]
->     return ([(np.where(per_sample != f)[0], np.where(per_sample == f)[0])
->              for f in range(k_eff)], groups)
-> ```
+> Shuffling the input rows moves `scaffold-lookup` 0.448 → 0.427 with the fold
+> membership provably unchanged. Fixing it means breaking 1-NN ties on a
+> content key (canonical SMILES) rather than position, and averaging or
+> ordering the model draw. Until then the audit is reproducible for a *given*
+> CSV, not for the same molecules in a different order.
 >
-> That is a behaviour change — it fixes one partition for good, and the
-> published numbers above move to the first row of the table (`scaffold 0.611
-> → scaffold-lookup 0.414`, learned 0.197), on every machine. It is left
-> undone deliberately: re-running the BACE audit and reissuing
-> `bace_report.html` is a call for whoever owns the client-facing claims.
-> `tests/test_scaffold_determinism.py` pins the defect meanwhile and will
-> start failing the moment it is fixed.
+> The XGBoost rungs also carry ~±0.002 across xgboost builds; the 1-NN rungs
+> are exact. `tests/test_scaffold_determinism.py` guards the split itself.
 
 ## Run — API (what the NEUTRA UI calls)
 
@@ -140,13 +131,15 @@ prototype UI stops replaying BACE and starts computing on real uploads.
 ## Status
 
 **Done — repo + CI.** `.github/workflows/ci.yml` runs the BACE regression audit
-(`reported ≈ 0.72`, `lookup_pct ≈ 80`, `floor < 0`) plus surface smoke tests for
-the CLI, the HTML report and the API, on every push. Running that guard on a
-second machine is what surfaced the scaffold-split defect above — the repo's
-first finding was about the auditor, not the model.
+plus surface smoke tests for the CLI, the HTML report and the API, on every
+push. Running that guard on a second machine is what surfaced the scaffold-split
+defect — the repo's first finding was about the auditor, not the model.
 
-**Open — item 0.** Decide on the scaffold-split fix before anything else here
-ships to a client, since it changes every scaffold number the tool reports.
+**Done — deterministic scaffold split.** Fixed in `_scaffold_folds`, with
+`bace_report.html` and the numbers above reissued from it.
+
+**Open — order-invariant scores.** 1-NN tie-breaking and XGBoost subsampling
+still read row order; see the determinism note above.
 
 ## Next steps — the last mile
 
