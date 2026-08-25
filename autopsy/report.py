@@ -198,7 +198,7 @@ def render_html(res: AutopsyResult, source: str = "") -> str:
   </div>
 
   <div style="margin-top:16px;font-family:monospace;font-size:10.5px;color:{C['mut']};letter-spacing:.02em;line-height:1.7">
-    {html.escape(m['featurisation'])} · {html.escape(m['model'])} · {m['k_folds']}-FOLD · POOLED OOF R² · GROUPKFOLD ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED {m['seed']}
+    {html.escape(m['featurisation'])} · {html.escape(m['model'])} · {m['k_folds']}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED {m['seed']}
   </div>
 </div>
 </body></html>"""

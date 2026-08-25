@@ -169,7 +169,7 @@ export default function ModelAutopsyNeutra() {
         </div>
 
         <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, fontFamily: mono, fontSize: 10.5, color: C.mut, letterSpacing: "0.02em" }}>
-          <span>ECFP4 · POOLED OOF R² · GROUPKFOLD ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL</span>
+          <span>ECFP4 · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL</span>
           <span style={{ color: C.textDim }}>SPECIMEN · BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER · <span style={{ color: C.cyanDim }}>secure yes · local yes · sent no</span></span>
         </div>
       </div>
