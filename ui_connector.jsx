@@ -19,6 +19,18 @@ const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTOPSY_API) ||
   "";
 
+// Is there an engine behind this page? Served by autopsy.api the answer is
+// yes; opened as a bare file or on a static host it is no, and the UI drops
+// its upload controls rather than offering a button that cannot work.
+export async function engineReachable() {
+  try {
+    const res = await fetch(`${API_BASE}/health`, { method: "GET" });
+    return res.ok && (await res.json()).status === "ok";
+  } catch {
+    return false;
+  }
+}
+
 // ── the hook the UI uses ─────────────────────────────────────────────
 // Returns { result, status, error, runFromFile, runFromRecords }.
 // `result` matches the engine's AutopsyResult: {specimen, ladder, verdict, readout, meta}.

@@ -142,6 +142,12 @@ editing `model_autopsy.jsx` or `ui_connector.jsx`:
 npm install && npm run build     # or: npm run watch
 ```
 
+The bundle is an ES module, so the page has to be *served* — opening
+`web/static/index.html` from the filesystem leaves it blank. Served from
+anywhere without the engine behind it (a static host, a preview link), the
+page probes `/health`, withdraws its upload controls and says so, rather
+than offering a button that cannot work.
+
 ### Container
 
 ```bash

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useAutopsy, flagColor } from "./ui_connector.jsx";
+import { useAutopsy, flagColor, engineReachable } from "./ui_connector.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // MODEL AUTOPSY — ActarusLab · NEUTRA-language build
@@ -89,10 +89,16 @@ export default function ModelAutopsyNeutra() {
   const [verdict, setVerdict] = useState(false);
   const [file, setFile] = useState(null);
   const [cols, setCols] = useState({ smiles: "smiles", y: "pIC50", date: "" });
+  const [engineUp, setEngineUp] = useState(false);
   const timers = useRef([]);
   const { result, status, error, runFromFile } = useAutopsy();
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  useEffect(() => {
+    let alive = true;
+    engineReachable().then((up) => { if (alive) setEngineUp(up); });
+    return () => { alive = false; };
+  }, []);
 
   const D = result ? fromResult(result, file ? file.name : "uploaded data") : DEMO;
   const busy = status === "running";
@@ -152,7 +158,8 @@ export default function ModelAutopsyNeutra() {
                 <Dot /> <span style={{ fontFamily: sans, fontWeight: 500, fontSize: 14, color: C.textDim }}>Survival</span>
               </div>
             </div>
-            <Ghost label={result ? "LIVE" : "BENCHMARK"} on={!!result} /><Ghost label="SPECIMEN" />
+            <Ghost label={result ? "LIVE" : engineUp ? "ENGINE READY" : "BENCHMARK"} on={!!result || engineUp} />
+            <Ghost label="SPECIMEN" />
           </div>
         </header>
 
@@ -172,12 +179,19 @@ export default function ModelAutopsyNeutra() {
             <LadderChart rungs={D.rungs} revealed={revealed} reported={D.reported} />
 
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <FilePick file={file} onPick={(f) => { setFile(f); setRevealed(0); setVerdict(false); }} disabled={busy} />
+              {engineUp && <FilePick file={file} onPick={(f) => { setFile(f); setRevealed(0); setVerdict(false); }} disabled={busy} />}
               <Action primary onClick={run} label={label} disabled={busy} />
               <Action onClick={() => { setRevealed(D.rungs.length); setVerdict(true); }} label="↧ REVEAL ALL" disabled={busy} />
             </div>
 
-            {file && <ColumnForm cols={cols} setCols={setCols} disabled={busy} />}
+            {engineUp && file && <ColumnForm cols={cols} setCols={setCols} disabled={busy} />}
+            {!engineUp && (
+              <div style={{ fontFamily: sans, fontSize: 11.5, color: C.mut, marginTop: 10, lineHeight: 1.5 }}>
+                No engine behind this page — showing the BACE-1 benchmark. Run{" "}
+                <code style={{ fontFamily: mono, color: C.cyanDim }}>uvicorn autopsy.api:app</code>{" "}
+                and open it from there to audit your own CSV.
+              </div>
+            )}
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 1, marginTop: 14, border: `1px solid ${C.edge}`, borderRadius: 8, overflow: "hidden", background: C.edge }}>
               {[["REPORTED", num(D.reported), C.green], ["LOOKUP", num(D.lookupRand), C.red],
