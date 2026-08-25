@@ -95,8 +95,14 @@ only 0.147.
 > ordering the model draw. Until then the audit is reproducible for a *given*
 > CSV, not for the same molecules in a different order.
 >
-> The XGBoost rungs also carry ~±0.002 across xgboost builds; the 1-NN rungs
-> are exact. `tests/test_scaffold_determinism.py` guards the split itself.
+> Cross-machine check: this box and a GitHub Actions runner (different CPU,
+> different Python patch) now agree digit-for-digit on all seven headline
+> numbers — `reported=0.722 lookup=0.576 survives=0.595 nn_scaffold=0.448
+> floor=-0.224 lookup%=80 learned=0.147`. Before the fix the same two machines
+> disagreed on `nn_scaffold` by 0.056. The smoke-test bands stay slightly wide
+> on the XGBoost rungs because a *different xgboost build* still shifts them by
+> ~0.002; the 1-NN rungs are exact.
+> `tests/test_scaffold_determinism.py` guards the split itself.
 
 ## Run — API (what the NEUTRA UI calls)
 
