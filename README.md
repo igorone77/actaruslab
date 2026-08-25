@@ -53,9 +53,20 @@ python -m autopsy.cli data.csv --smiles smiles --y pIC50 \
 Prints the verdict + ASCII ladder to the terminal; with `--out` writes a
 self-contained NEUTRA-styled HTML report you can hand to a client.
 
-**Verified on BACE-1** (1513 compounds, 377 scaffold series):
+**Verified on BACE-1** (1513 compounds, 377 scaffold series, `k=5`, `seed=0`):
 `random 0.72 → lookup 0.58 → scaffold 0.62 → scaffold-lookup 0.36 → floor −0.22`.
 80% of the reported score is a lookup; 0.26 is learned beyond it.
+`bace_report.html` is that run; `tests/test_bace_smoke.py` re-derives it in CI.
+
+> **Reproducibility caveat.** The two scaffold rungs depend on how `GroupKFold`
+> assigns scaffold series to folds, and scikit-learn changed that assignment in
+> **1.9.0** — same 377 series, same fold sizes, different partition. On 1.9 the
+> ladder reads `scaffold 0.63 → scaffold-lookup 0.46`, i.e. *learned beyond
+> lookup* drops 0.26 → 0.17 with no change to this code. The random-split and
+> permutation rungs are identical either way. `requirements.txt` therefore pins
+> `scikit-learn<1.9`. The durable fix is to stop delegating the split: assign
+> series to folds inside the engine (sort by size, greedy fill) so the partition
+> is the engine's own and `seed` genuinely covers it.
 
 ## Run — API (what the NEUTRA UI calls)
 
@@ -87,30 +98,33 @@ prototype UI stops replaying BACE and starts computing on real uploads.
 
 ---
 
-## Next steps — for Claude Code (the last mile)
+## Status
 
-This engine is proven but lives in a scratch session. To become the product
-Strikeon uses:
+**Done — repo + CI.** `.github/workflows/ci.yml` runs the BACE regression audit
+(`reported ≈ 0.72`, `lookup_pct ≈ 80`, `lookup_scaffold ≈ 0.36`, `floor < 0`)
+plus surface smoke tests for the CLI, the HTML report and the API, on every
+push. Running the guard is what surfaced the `GroupKFold` drift noted above.
 
-1. **Repo + CI.** Drop this into a git repo. Add a smoke test that runs the
-   BACE audit and asserts `reported ≈ 0.72`, `lookup_pct ≈ 80`, `floor < 0`
-   — a regression guard so future changes can't silently break the numbers.
-2. **Wire the UI to the API.** The prototype (`model_autopsy.jsx`) currently
+## Next steps — the last mile
+
+To become the product Strikeon uses:
+
+1. **Wire the UI to the API.** The prototype (`model_autopsy.jsx`) currently
    holds constants. Replace them with a `fetch('/autopsy/csv', …)` on file
    upload and render `result.ladder` / `result.verdict` / `result.readout`.
    A reference `useAutopsy()` hook is in `ui_connector.jsx`.
-3. **Deploy the API** somewhere the UI can reach (a small container). Lock
+2. **Deploy the API** somewhere the UI can reach (a small container). Lock
    CORS to the UI origin — it's dev-open (`*`) right now.
-4. **Harden for their data.** Real campaign CSVs are messier than BACE:
+3. **Harden for their data.** Real campaign CSVs are messier than BACE:
    mixed activity units (nM vs µM), censored values (`>10000`), salts in the
    SMILES, duplicate measurements. Add a normalisation pass before the engine
    (unit harmonisation, `>`/`<` handling, desalting, aggregating replicate
    activities) — each is a known QSAR-data pitfall and each is a place a naive
    pipeline leaks.
-5. **Performance.** 1-NN Tanimoto is O(n²); fine to ~5k compounds, slow beyond.
+4. **Performance.** 1-NN Tanimoto is O(n²); fine to ~5k compounds, slow beyond.
    For larger sets, switch the lookup baseline to an approximate NN index
    (e.g. FAISS on folded fingerprints) — the *result* is what matters, the
    exact-NN guarantee isn't.
 
-Items 1–3 make it a running service. Items 4–5 make it trustworthy on data
+Items 1–2 make it a running service. Items 3–4 make it trustworthy on data
 that isn't a clean public benchmark.

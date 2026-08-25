@@ -5,12 +5,16 @@ splitting, or the model can't silently move them.
 
     python -m tests.test_bace_smoke      (or: pytest tests/)
 """
+from pathlib import Path
+
 import pandas as pd
 from autopsy.engine import run_autopsy
 
+BACE = Path(__file__).resolve().parent.parent / "bace.csv"
+
 
 def test_bace_headline_numbers():
-    df = pd.read_csv("bace.csv")
+    df = pd.read_csv(BACE)
     res = run_autopsy(df, "smiles", "pIC50", k=5, seed=0)
     v, s = res.verdict, res.specimen
 
@@ -23,6 +27,10 @@ def test_bace_headline_numbers():
     assert 0.68 <= v["reported"] <= 0.75, v["reported"]
     assert 0.54 <= v["lookup_random"] <= 0.61, v["lookup_random"]
     assert 0.58 <= v["survives_scaffold"] <= 0.66, v["survives_scaffold"]
+    # the scaffold-lookup floor pins the scaffold *partition*, not just the score:
+    # it is the rung that moves if GroupKFold changes how it assigns series to folds
+    # (see the scikit-learn pin in requirements.txt)
+    assert 0.32 <= v["lookup_scaffold"] <= 0.41, v["lookup_scaffold"]
     assert v["permutation_floor"] < 0.05, v["permutation_floor"]      # floor collapses
 
     # the two headline claims
@@ -31,7 +39,8 @@ def test_bace_headline_numbers():
 
     print("✓ BACE regression: "
           f"reported={v['reported']} lookup={v['lookup_random']} "
-          f"survives={v['survives_scaffold']} floor={v['permutation_floor']} "
+          f"survives={v['survives_scaffold']} nn_scaffold={v['lookup_scaffold']} "
+          f"floor={v['permutation_floor']} "
           f"lookup%={v['lookup_pct_of_reported']} learned={v['learned_beyond_lookup']}")
 
 

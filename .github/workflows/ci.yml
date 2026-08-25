@@ -1,0 +1,43 @@
+# Regression guard for the MODEL AUTOPSY engine.
+#
+# Runs the full BACE-1 audit and asserts the headline numbers still land
+# where the README claims. If a change to featurisation, splitting or the
+# model moves them, this fails loudly rather than silently.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  bace-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: BACE-1 regression audit + surface smoke
+        run: pytest tests/ -v -s
+
+      - name: API smoke — service boots and answers
+        run: |
+          uvicorn autopsy.api:app --host 127.0.0.1 --port 8000 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/health | grep -q '"status":"ok"'
