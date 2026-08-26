@@ -13,7 +13,9 @@ const options = {
   outfile: resolve(root, "web/static/app.js"),
   bundle: true,
   minify: true,
-  format: "esm",
+  // IIFE, not ESM: browsers refuse module scripts from file://, and the
+  // static showcase has to survive being double-clicked.
+  format: "iife",
   target: ["es2020"],
   jsx: "automatic",
   loader: { ".jsx": "jsx" },

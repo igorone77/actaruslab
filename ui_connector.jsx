@@ -5,19 +5,16 @@
 // audit. There is no backend in an artifact sandbox, so a page served from
 // anywhere but the API will sit on its benchmark constants.
 //
-// API_BASE resolves in three steps, most specific first:
-//   window.__AUTOPSY_API__   a host page pointing at a remote API
-//   VITE_AUTOPSY_API         a Vite dev server proxying elsewhere
-//   ""                       same origin — how `uvicorn autopsy.api:app`
-//                            serves it, and the path with no CORS to open
+// API_BASE is relative to the page, never an absolute URL and never a
+// hardcoded port, so the same bundle works on whatever port uvicorn is given,
+// under a sub-path on a static host, and from a file:// double-click.
+// `window.__AUTOPSY_API__`, set by a host page before this script loads,
+// overrides it to point at an API served from somewhere else.
 // ─────────────────────────────────────────────────────────────────────
 
 import { useState, useCallback } from "react";
 
-const API_BASE =
-  (typeof window !== "undefined" && window.__AUTOPSY_API__) ||
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTOPSY_API) ||
-  "";
+const API_BASE = (typeof window !== "undefined" && window.__AUTOPSY_API__) || ".";
 
 const POLL_MS = 1200;
 

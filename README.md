@@ -146,11 +146,31 @@ editing `model_autopsy.jsx` or `ui_connector.jsx`:
 npm install && npm run build     # or: npm run watch
 ```
 
-The bundle is an ES module, so the page has to be *served* — opening
-`web/static/index.html` from the filesystem leaves it blank. Served from
-anywhere without the engine behind it (a static host, a preview link), the
-page probes `/health`, withdraws its upload controls and says so, rather
-than offering a button that cannot work.
+The bundle is an IIFE, not an ES module, so `web/static/index.html` also
+opens straight off the filesystem — browsers refuse module scripts from
+`file://`, and the showcase has to survive being double-clicked.
+
+### One page, two jobs
+
+The same bundle is the public showcase and the working tool; which one it is
+gets decided at load, not at build.
+
+| | no engine reachable | engine reachable |
+|---|---|---|
+| where | Netlify, a `file://` double-click, any static host | `uvicorn autopsy.api:app` |
+| badge | `BENCHMARK` | `ENGINE READY`, then `LIVE` |
+| upload | withdrawn, with a line saying what to run | active; audits the CSV you pick |
+| numbers | the BACE-1 audit, precomputed | whatever your data gives |
+
+`engineReachable()` probes `./health` once on mount. `API_BASE` is relative
+to the page — never an absolute URL, never a hardcoded port — so the same
+file works on any port uvicorn is given, under a sub-path on a static host,
+and from the filesystem. A host page can override it with
+`window.__AUTOPSY_API__` to point at an API served elsewhere.
+
+**Publishing the showcase.** `netlify.toml` sets `publish = "web/static"`, so
+a repo-linked Netlify site needs no build step — the bundle is committed. Or
+drag the `web/static` folder onto Netlify's deploy area.
 
 ### Container
 

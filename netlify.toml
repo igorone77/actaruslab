@@ -1,0 +1,20 @@
+# Netlify only needs to know which folder is the site: web/static holds
+# index.html and the built bundle, and nothing there needs compiling — app.js
+# is committed, so no build step can fail on the deploy.
+#
+# To rebuild the bundle on Netlify instead of committing it, set:
+#   command = "npm install && npm run build"
+# and Netlify will regenerate web/static/app.js from model_autopsy.jsx.
+
+[build]
+  publish = "web/static"
+
+# The page probes ./health on load. There is no engine on a static host, so
+# that request 404s and the UI withdraws its upload controls and says so —
+# which is the intended showcase behaviour, not an error to redirect away.
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
