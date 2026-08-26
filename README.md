@@ -125,7 +125,11 @@ putting this on a public host.
 ### Endpoints
 
 - `GET  /health`
-- `POST /autopsy/csv`      — multipart file + `smiles`,`y`,`date?`,`k` form fields
+- `POST /autopsy/jobs`     — multipart upload → `202 {job_id}`; the audit runs off
+  the request. What the UI uses, and what a hosted deployment needs.
+- `GET  /autopsy/jobs/{id}` — `{status, progress, elapsed, result?, error?}`
+- `POST /autopsy/csv`      — multipart file + `smiles`,`y`,`date?`,`k` form fields,
+  answered synchronously
 - `POST /autopsy/records`  — JSON `{records:[{smiles,y,date?}], k, has_date}`
 - `GET  /`                 — the UI · `GET /docs` — OpenAPI
 
@@ -158,7 +162,7 @@ No Node in the image — it copies the built bundle.
 
 ### Putting it on a public host
 
-Three environment variables, all safe by default, so deployment is config
+Six environment variables, all safe by default, so deployment is config
 rather than a code edit:
 
 | variable | default | what it does |
@@ -166,20 +170,33 @@ rather than a code edit:
 | `AUTOPSY_ALLOWED_ORIGINS` | unset | comma-separated origins allowed to call the API cross-site. Unset means same-origin only, and no CORS headers are sent at all — correct when this app serves its own UI. |
 | `AUTOPSY_MAX_UPLOAD_MB` | `25` | larger uploads get 413 |
 | `AUTOPSY_MAX_ROWS` | `5000` | wider datasets get 413 |
+| `AUTOPSY_WORKERS` | `1` | audits running at once; each saturates a CPU |
+| `AUTOPSY_QUEUE_DEPTH` | `8` | jobs allowed to wait; beyond it, submits get 429 |
+| `AUTOPSY_JOB_TTL` | `3600` | seconds a finished job stays readable |
 
-> **The synchronous endpoint is the real deployment blocker.** `/autopsy/csv`
-> runs the whole ladder before it answers: measured here, **1513 compounds
-> holds the request open for 19.2 s**. Most platforms cut a request off well
-> before a realistic dataset finishes — 30 s on some, 60 s on others, 100 s
-> at a Cloudflare proxy — and the lookup rung is O(n²), so 3000 compounds is
-> roughly four times that wait, not twice.
->
-> A public deployment therefore needs the audit moved off the request:
-> `POST /autopsy/csv` returns a job id, the UI polls for the result, and a
-> worker runs the engine. That is a real change to the API and the hook in
-> `ui_connector.jsx`, not a config flag. Until it exists, this is safe to
-> host for a handful of known users on small datasets, and honest to run
-> locally for anything else.
+**The audit runs off the request.** It has to: measured here, 1513 compounds
+take 19.2 s, and the lookup rung is O(n²), so 3000 compounds is roughly four
+times that wait rather than twice. Platforms cut requests off well before
+that — 30 s on some, 60 s on others, 100 s at a Cloudflare proxy. So the UI
+submits a job and polls:
+
+```
+POST /autopsy/jobs        -> 202 {job_id, status, rows}      (0.4 s)
+GET  /autopsy/jobs/{id}   -> {status, progress, elapsed, result?, error?}
+```
+
+Validation stays on the request — a wrong column name, an oversized file or
+too many rows come back immediately as 4xx, so only the slow part is
+deferred. `progress` carries the engine's own log line (`rung · 1-NN
+Tanimoto scaffold split…`), which the UI shows while it waits.
+
+`/autopsy/csv` and `/autopsy/records` still answer synchronously and are
+kept for scripting and local use, where no proxy is going to hang up.
+
+> Jobs live in the serving process's memory. They do not survive a restart
+> and are not shared between replicas — the right trade for a single
+> container, the wrong one for a horizontally scaled deployment, which would
+> need Redis or a database behind the same two endpoints.
 
 Once it is hosted, a subdomain is the natural shape — `autopsy.example.org`
 pointed at the container — because the app is a Python server while a
@@ -217,17 +234,25 @@ defect — the repo's first finding was about the auditor, not the model.
 `/`, so one command gives you a page that takes a CSV upload and renders a
 real audit. Same origin as the API, no CORS, no second dev server.
 
+**Done — deployable.** CORS closed by default, uploads capped, and the audit
+moved off the request onto a job queue, so it no longer dies at a platform's
+request timeout.
+
 **Open — order-invariant scores.** 1-NN tie-breaking and XGBoost subsampling
 still read row order; see the determinism note above.
+
+**Open — nothing authenticates a caller.** Anyone who can reach the URL can
+queue audits. Fine behind a private host or a proxy that handles auth; decide
+before it is public.
 
 ## Next steps — the last mile
 
 To become the product Strikeon uses:
 
-1. **Deploy it.** `Dockerfile` builds the whole thing; it needs a host. Lock
-   CORS to the UI origin first — it's dev-open (`*`) right now — and decide
-   whether uploads should be size-capped, since the audit is O(n²) in the
-   lookup rung and holds the request open for its duration.
+1. **Deploy it.** `Dockerfile` builds the whole thing; it needs a host and a
+   DNS record. CORS, upload caps and the job queue are done — what is left is
+   choosing where it runs and deciding whether it should be open to anyone
+   with the URL, since nothing here authenticates a caller.
 2. **Harden for their data.** Real campaign CSVs are messier than BACE:
    mixed activity units (nM vs µM), censored values (`>10000`), salts in the
    SMILES, duplicate measurements. Add a normalisation pass before the engine

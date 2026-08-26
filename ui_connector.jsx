@@ -19,6 +19,8 @@ const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTOPSY_API) ||
   "";
 
+const POLL_MS = 1200;
+
 // Is there an engine behind this page? Served by autopsy.api the answer is
 // yes; opened as a bare file or on a static host it is no, and the UI drops
 // its upload controls rather than offering a button that cannot work.
@@ -32,33 +34,53 @@ export async function engineReachable() {
 }
 
 // ── the hook the UI uses ─────────────────────────────────────────────
-// Returns { result, status, error, runFromFile, runFromRecords }.
+// Returns { result, status, error, progress, runFromFile, runFromRecords }.
 // `result` matches the engine's AutopsyResult: {specimen, ladder, verdict, readout, meta}.
 export function useAutopsy() {
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("idle");   // idle | running | done | error
   const [error, setError] = useState(null);
+  const [progress, setProgress] = useState(null); // the engine's current rung
 
-  // Path A — user picks a CSV file (browser file input)
+  // Path A — user picks a CSV file (browser file input).
+  //
+  // Submits a job and polls. The audit takes tens of seconds and is
+  // quadratic in the lookup rung, so it cannot answer inside a request on
+  // any host worth deploying to. `progress` carries the engine's own log
+  // line so the wait reads as work rather than a hang.
   const runFromFile = useCallback(async (file, { smiles, y, date, k = 5 }) => {
-    setStatus("running"); setError(null);
+    setStatus("running"); setError(null); setProgress("uploading…");
     const form = new FormData();
     form.append("file", file);
     form.append("smiles", smiles);
     form.append("y", y);
     if (date) form.append("date", date);
     form.append("k", String(k));
+
+    const fail = async (res) => {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    };
+
     try {
-      const res = await fetch(`${API_BASE}/autopsy/csv`, { method: "POST", body: form });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        throw new Error(detail.detail || `HTTP ${res.status}`);
+      const res = await fetch(`${API_BASE}/autopsy/jobs`, { method: "POST", body: form });
+      if (!res.ok) await fail(res);
+      const { job_id } = await res.json();
+
+      for (;;) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        const poll = await fetch(`${API_BASE}/autopsy/jobs/${job_id}`);
+        if (!poll.ok) await fail(poll);
+        const job = await poll.json();
+        setProgress(job.progress || job.status);
+        if (job.status === "done") {
+          setResult(job.result); setStatus("done"); setProgress(null);
+          return job.result;
+        }
+        if (job.status === "failed") throw new Error(job.error);
       }
-      const data = await res.json();
-      setResult(data); setStatus("done");
-      return data;
     } catch (e) {
-      setError(e.message); setStatus("error"); throw e;
+      setError(e.message); setStatus("error"); setProgress(null); throw e;
     }
   }, []);
 
@@ -83,7 +105,7 @@ export function useAutopsy() {
     }
   }, []);
 
-  return { result, status, error, runFromFile, runFromRecords };
+  return { result, status, error, progress, runFromFile, runFromRecords };
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -93,7 +93,7 @@ export default function ModelAutopsyNeutra() {
   const [cols, setCols] = useState({ smiles: "smiles", y: "pIC50", date: "" });
   const [engineUp, setEngineUp] = useState(false);
   const timers = useRef([]);
-  const { result, status, error, runFromFile } = useAutopsy();
+  const { result, status, error, progress, runFromFile } = useAutopsy();
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   useEffect(() => {
@@ -123,6 +123,8 @@ export default function ModelAutopsyNeutra() {
   };
 
   const label = busy ? "● AUTOPSY RUNNING…" : file ? "▶ RUN AUTOPSY" : "▶ REPLAY BENCHMARK";
+  // the engine's log line, trimmed of its trailing ellipsis and rung prefix
+  const rung = progress ? progress.replace(/^rung · /, "").replace(/…$/, "") : null;
 
   return (
     <div style={{ minHeight: "100vh", boxSizing: "border-box",
@@ -187,6 +189,14 @@ export default function ModelAutopsyNeutra() {
             </div>
 
             {engineUp && file && <ColumnForm cols={cols} setCols={setCols} disabled={busy} />}
+            {busy && rung && (
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 10 }}>
+                <span style={{ width: 6, height: 6, borderRadius: 6, background: C.cyan,
+                  boxShadow: `0 0 8px ${C.cyan}`, flex: "none" }} />
+                <span style={{ fontFamily: mono, fontSize: 11.5, color: C.cyanDim,
+                  letterSpacing: "0.02em" }}>{rung}</span>
+              </div>
+            )}
             {!engineUp && (
               <div style={{ fontFamily: sans, fontSize: 11.5, color: C.mut, marginTop: 10, lineHeight: 1.5 }}>
                 No engine behind this page — showing the BACE-1 benchmark. Run{" "}

@@ -8,6 +8,8 @@ serialisers, not the numbers; tests/test_bace_smoke.py guards the numbers.
 """
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -114,3 +116,62 @@ def test_api_rejects_oversized_dataset(monkeypatch, slice_df):
         autopsy_records(req)
     assert exc.value.status_code == 413
     assert "300 rows" in exc.value.detail
+
+
+# ── jobs ──────────────────────────────────────────────────────────────
+# The audit is too slow to answer inside a request, so it runs off it. These
+# drive the worker directly — no threads, no live server — since what needs
+# pinning is the state machine, not the executor.
+
+def _queue(rows: int) -> str:
+    jid = uuid.uuid4().hex
+    api._jobs[jid] = {"status": "queued", "progress": "queued", "result": None,
+                      "error": None, "created": time.time(), "started": None,
+                      "finished": None, "rows": rows}
+    return jid
+
+
+def test_job_runs_to_a_readable_result(slice_df):
+    jid = _queue(len(slice_df))
+    api._work(jid, slice_df, "smiles", "pIC50", None, 3)
+
+    out = api.job_status(jid)
+    assert out["status"] == "done"
+    assert out["progress"] == "complete"
+    assert set(out["result"]) == {"specimen", "ladder", "verdict", "readout", "meta"}
+    assert out["elapsed"] >= 0
+
+
+def test_job_records_engine_failure_instead_of_raising(slice_df):
+    """A bad audit must land as a failed job the poller can read, not as an
+    exception that kills the worker silently."""
+    jid = _queue(len(slice_df))
+    api._work(jid, slice_df, "smiles", "no_such_column", None, 3)
+
+    out = api.job_status(jid)
+    assert out["status"] == "failed"
+    assert "not found" in out["error"]
+    assert "result" not in out
+
+
+def test_unknown_job_is_404():
+    with pytest.raises(HTTPException) as exc:
+        api.job_status("nope")
+    assert exc.value.status_code == 404
+
+
+def test_columns_are_checked_before_queueing(slice_df):
+    """A typo in a column name should come back at submit, not a minute later
+    as a failed job."""
+    with pytest.raises(HTTPException) as exc:
+        api._check_columns(slice_df, "smiles", "nope", None)
+    assert exc.value.status_code == 422
+    assert "nope" in exc.value.detail
+
+
+def test_finished_jobs_are_reaped(monkeypatch):
+    monkeypatch.setattr(api, "JOB_TTL", 0)
+    jid = _queue(100)
+    api._jobs[jid].update(status="done", finished=time.time() - 1)
+    api._reap(time.time())
+    assert jid not in api._jobs
