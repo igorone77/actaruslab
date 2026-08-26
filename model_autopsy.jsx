@@ -15,32 +15,32 @@ import { useAutopsy, flagColor, engineReachable } from "./ui_connector.jsx";
 const DEMO = {
   source: "BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER",
   rungs: [
-    { key: "xgb_rand", label: "XGBoost", cond: "random split", r2: 0.722, rmse: 0.708, rho: 0.828, kind: "reported" },
-    { key: "nn_rand", label: "1-NN lookup", cond: "random split", r2: 0.576, rmse: 0.874, rho: 0.757, kind: "lookup" },
-    { key: "xgb_scaf", label: "XGBoost", cond: "scaffold split", r2: 0.595, rmse: 0.854, rho: 0.745, kind: "survives" },
-    { key: "nn_scaf", label: "1-NN lookup", cond: "scaffold split", r2: 0.448, rmse: 0.997, rho: 0.696, kind: "lookup" },
-    { key: "perm", label: "Permutation", cond: "shuffled target", r2: -0.224, rmse: 1.485, rho: -0.026, kind: "floor" },
+    { key: "xgb_rand", label: "XGBoost", cond: "random split", r2: 0.709, rmse: 0.724, rho: 0.819, kind: "reported" },
+    { key: "nn_rand", label: "1-NN lookup", cond: "random split", r2: 0.572, rmse: 0.878, rho: 0.749, kind: "lookup" },
+    { key: "xgb_scaf", label: "XGBoost", cond: "scaffold split", r2: 0.597, rmse: 0.852, rho: 0.746, kind: "survives" },
+    { key: "nn_scaf", label: "1-NN lookup", cond: "scaffold split", r2: 0.451, rmse: 0.995, rho: 0.695, kind: "lookup" },
+    { key: "perm", label: "Permutation", cond: "shuffled target", r2: -0.222, rmse: 1.483, rho: 0.02, kind: "floor" },
   ],
-  reported: 0.722, lookupRand: 0.576, survives: 0.595, nnScaf: 0.448,
-  learned: 0.147,
-  lookupPct: 80,
+  reported: 0.709, lookupRand: 0.572, survives: 0.597, nnScaf: 0.451,
+  learned: 0.146,
+  lookupPct: 81,
   headline: null,          // demo keeps the hand-written verdict below
   readout: [
-    { signal: "Similarity leakage", flag: "SEVERE", value_pct: 80,
+    { signal: "Similarity leakage", flag: "SEVERE", value_pct: 81,
       note: "A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." },
-    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.595,
-      note: "On disjoint chemical series the model holds 0.59 — real, but below the reported figure. This is what generalises to new chemistry." },
-    { signal: "Learned structure", flag: "THIN", value: 0.147,
-      note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond copying its nearest analogue." },
+    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.597,
+      note: "On disjoint chemical series the model holds 0.60 — real, but below the reported figure. This is what generalises to new chemistry." },
+    { signal: "Learned structure", flag: "THIN", value: 0.146,
+      note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues." },
     { signal: "Temporal test", flag: "N/A", value: null,
       note: "Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." },
-    { signal: "Permutation floor", flag: "CLEAN", value: -0.224,
+    { signal: "Permutation floor", flag: "CLEAN", value: -0.222,
       note: "Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." },
   ],
   specimen: { n_compounds: 1513, n_scaffold_series: 377, n_singleton_series: 200,
               largest_series: 63, largest_series_pct: 4.2, target_mean: 6.522,
               target_sd: 1.342, exact_duplicate_smiles: 0 },
-  meta: "ECFP4 · 2048 bit · XGBoost (400 trees, depth 6) · 5-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED 0",
+  meta: "ECFP4 · 2048 bit · XGBoost (400 trees, depth 6) · 5-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED 0",
 };
 
 // engine AutopsyResult -> the shape this page renders
@@ -58,7 +58,7 @@ function fromResult(res, source) {
     headline: v.headline,
     readout: res.readout,
     specimen: res.specimen,
-    meta: `${m.featurisation} · ${m.k_folds}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TANIMOTO 1-NN · PERMUTATION CONTROL · SEED ${m.seed}`,
+    meta: `${m.featurisation} · ${m.k_folds}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED ${m.seed}`,
   };
 }
 

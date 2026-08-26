@@ -27,15 +27,15 @@ def test_bace_headline_numbers():
     # values rather than the wide ones the nondeterministic split needed.
     # The 1-NN rungs are exact for a given CSV; the XGBoost rungs carry ~±0.002
     # across xgboost builds, hence the slightly wider window on those.
-    assert 0.712 <= v["reported"] <= 0.732, v["reported"]                    # 0.722
-    assert 0.571 <= v["lookup_random"] <= 0.581, v["lookup_random"]          # 0.576
-    assert 0.585 <= v["survives_scaffold"] <= 0.605, v["survives_scaffold"]  # 0.595
-    assert 0.443 <= v["lookup_scaffold"] <= 0.453, v["lookup_scaffold"]      # 0.448
-    assert -0.25 <= v["permutation_floor"] <= -0.20, v["permutation_floor"]  # -0.224
+    assert 0.699 <= v["reported"] <= 0.719, v["reported"]                    # 0.709
+    assert 0.567 <= v["lookup_random"] <= 0.577, v["lookup_random"]          # 0.572
+    assert 0.587 <= v["survives_scaffold"] <= 0.607, v["survives_scaffold"]  # 0.597
+    assert 0.446 <= v["lookup_scaffold"] <= 0.456, v["lookup_scaffold"]      # 0.451
+    assert -0.24 <= v["permutation_floor"] <= -0.20, v["permutation_floor"]  # -0.222
 
     # the two headline claims
-    assert 79 <= v["lookup_pct_of_reported"] <= 81, v["lookup_pct_of_reported"]
-    assert 0.137 <= v["learned_beyond_lookup"] <= 0.157, v["learned_beyond_lookup"]
+    assert 80 <= v["lookup_pct_of_reported"] <= 82, v["lookup_pct_of_reported"]
+    assert 0.136 <= v["learned_beyond_lookup"] <= 0.156, v["learned_beyond_lookup"]
 
     print("✓ BACE regression: "
           f"reported={v['reported']} lookup={v['lookup_random']} "

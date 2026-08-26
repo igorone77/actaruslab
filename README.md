@@ -54,55 +54,56 @@ Prints the verdict + ASCII ladder to the terminal; with `--out` writes a
 self-contained NEUTRA-styled HTML report you can hand to a client.
 
 **Verified on BACE-1** (1513 compounds, 377 scaffold series, `k=5`, `seed=0`):
-`random 0.72 → lookup 0.58 → scaffold 0.59 → scaffold-lookup 0.45 → floor −0.22`.
-80% of the reported score is a lookup; **0.147** is learned beyond it
-(`scaffold 0.595 − scaffold-lookup 0.448`). `bace_report.html` is that run;
+`random 0.71 → lookup 0.57 → scaffold 0.60 → scaffold-lookup 0.45 → floor −0.22`.
+81% of the reported score is a lookup; **0.146** is learned beyond it
+(`scaffold 0.597 − scaffold-lookup 0.451`). `bace_report.html` is that run;
 `tests/test_bace_smoke.py` re-derives it in CI.
 
-Note the ladder is no longer monotonically descending: the random-split lookup
-(0.58) now sits *above* what survives a new chemical series (0.59) by a hair.
-That shape is the finding, not a glitch — on novel chemistry the model barely
-matches a random-split lookup table, and beats the scaffold-split lookup by
-only 0.147.
+Note the ladder is not monotonically descending: what survives a genuinely new
+chemical series (0.597) sits a hair *above* the random-split lookup (0.572), so
+the line ticks up at the third rung. That shape is the finding, not a glitch —
+on novel chemistry the model barely matches a lookup table built on a random
+split, and beats the scaffold-split lookup by only 0.146.
 
-> **Determinism.** The scaffold split is a function of the molecules alone.
-> `_scaffold_folds` assigns group ids from `sorted(set(scaffolds))` — scaffold
-> content, not order of appearance — and fills folds largest-series-first into
-> the lightest fold, ties broken by group id and by fold index. Nothing
-> consults an unstable sort, so the same compounds give the same folds on any
-> machine and under any row ordering.
+> **Determinism.** The audit is a function of the molecule set. Same
+> compounds, same numbers — on any machine, in any file order, run after run.
+> Three decisions used to leak something else in, and all three are closed.
 >
-> This replaced a delegation to scikit-learn's `GroupKFold`, which ordered
-> series by size with `np.argsort(...)` — an *unstable* sort — where 200 of
-> BACE's 377 series tie at one compound. Every tie-breaking was a valid
-> ordering and each produced a different partition into folds of identical
-> size, so `scaffold-lookup` read 0.365 on one machine and 0.421 on another
-> with the same library versions. `seed` never reached that decision. No
-> dependency pin fixes it; only owning the assignment does.
+> **The split.** `_scaffold_folds` assigns group ids from
+> `sorted(set(scaffolds))` — scaffold content, not order of appearance — and
+> fills folds largest-series-first into the lightest fold, ties broken by
+> group id then fold index. This replaced a delegation to scikit-learn's
+> `GroupKFold`, which ordered series by size with `np.argsort(...)`, an
+> *unstable* sort, where 200 of BACE's 377 series tie at one compound. Every
+> tie-breaking was a valid ordering and each produced a different partition
+> into folds of identical size, so `scaffold-lookup` read 0.365 on one machine
+> and 0.421 on another with the same library versions. No dependency pin fixes
+> that; only owning the assignment does.
 >
-> **Still outstanding — the scores are not yet order-invariant.** The folds
-> are, but two rungs still read the row order *inside* a fold:
+> **The row order.** Everything downstream reads positions — `KFold` splits
+> them, XGBoost's `subsample` and `colsample_bytree` draw against them, the
+> 1-NN pool is walked in them. So `run_autopsy` sorts rows by canonical SMILES
+> before any of that happens. The seed was always propagated correctly and the
+> thread count was never the problem (measured identical across 1, 2, 4 and
+> all cores); the row order was.
 >
-> * `_nn_oof` breaks ties with `np.argmax`, i.e. by position. On BACE's
->   scaffold folds 99 of 1513 test molecules have a tied nearest neighbour and
->   83 of those tie between neighbours with *different* activities, so the
->   prediction depends on which one comes first.
-> * XGBoost's `subsample`/`colsample_bytree` draw against row positions.
+> **The lookup ties.** `_nn_oof` predicts the mean activity of *every*
+> training molecule at maximum Tanimoto, where it used to keep whichever
+> `np.argmax` reached first. On BACE 99 of 1513 test molecules have a tied
+> nearest neighbour and 83 tie across neighbours with different activities.
+> Averaging removes the order dependence and is the better estimator — several
+> equidistant analogues say more together than one of them picked arbitrarily.
+> The baseline is now **"mean of the most similar neighbours"**, not "one
+> arbitrary neighbour among the most similar", and its published numbers moved
+> accordingly.
 >
-> Shuffling the input rows moves `scaffold-lookup` 0.448 → 0.427 with the fold
-> membership provably unchanged. Fixing it means breaking 1-NN ties on a
-> content key (canonical SMILES) rather than position, and averaging or
-> ordering the model draw. Until then the audit is reproducible for a *given*
-> CSV, not for the same molecules in a different order.
->
-> Cross-machine check: this box and a GitHub Actions runner (different CPU,
-> different Python patch) now agree digit-for-digit on all seven headline
-> numbers — `reported=0.722 lookup=0.576 survives=0.595 nn_scaffold=0.448
-> floor=-0.224 lookup%=80 learned=0.147`. Before the fix the same two machines
-> disagreed on `nn_scaffold` by 0.056. The smoke-test bands stay slightly wide
-> on the XGBoost rungs because a *different xgboost build* still shifts them by
-> ~0.002; the 1-NN rungs are exact.
-> `tests/test_scaffold_determinism.py` guards the split itself.
+> Two checks stand behind this. `test_verdict_survives_row_permutation` audits
+> a dataset, shuffles the rows, audits again, and asserts all seven headline
+> numbers match exactly — on BACE and on a 500-molecule AlogP set where the
+> verdict is the opposite one. And this box and a GitHub Actions runner agree
+> digit-for-digit, on different CPUs and Python patch releases. The smoke-test
+> bands stay slightly wide on the XGBoost rungs because a *different xgboost
+> build* still shifts them by ~0.002; the 1-NN rungs are exact.
 
 ## Run — the app (browser)
 
@@ -258,8 +259,9 @@ real audit. Same origin as the API, no CORS, no second dev server.
 moved off the request onto a job queue, so it no longer dies at a platform's
 request timeout.
 
-**Open — order-invariant scores.** 1-NN tie-breaking and XGBoost subsampling
-still read row order; see the determinism note above.
+**Done — reproducible scores.** Canonical row ordering and a tie-averaged
+lookup baseline close the last known gap: the whole verdict now survives a row
+permutation, verified on two datasets.
 
 **Open — nothing authenticates a caller.** Anyone who can reach the URL can
 queue audits. Fine behind a private host or a proxy that handles auth; decide

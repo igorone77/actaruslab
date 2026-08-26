@@ -19,10 +19,12 @@ groups filled largest-first into the lightest fold with ties broken by group
 id and by fold index. These tests assert that guarantee holds — identical
 folds under any row ordering — rather than the defect it replaced.
 
-Scope: this covers the *split*. The scores on top of it are not yet
-order-invariant — `_nn_oof` breaks nearest-neighbour ties by position and
-XGBoost subsamples against row positions. See the determinism note in the
-README; `test_scores_still_read_row_order` pins what is left.
+The scores on top of the split used to read row order too — `_nn_oof` broke
+nearest-neighbour ties with `np.argmax`, and XGBoost's subsample and
+colsample_bytree draw against row positions. Both are closed: the engine puts
+rows in canonical SMILES order before anything reads a position, and the
+lookup baseline averages its ties. `test_verdict_survives_row_permutation`
+asserts the whole verdict now, on two datasets.
 """
 from pathlib import Path
 
@@ -30,7 +32,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autopsy.engine import _scaffold, _scaffold_folds, _fingerprint, _nn_oof
+from autopsy.engine import run_autopsy, _scaffold, _scaffold_folds, _fingerprint, _nn_oof
 
 BACE = Path(__file__).resolve().parent.parent / "bace.csv"
 K = 5
@@ -97,21 +99,43 @@ def test_folds_are_balanced_and_disjoint(bace):
     assert sizes[-1] - sizes[0] <= 0.02 * len(smiles), sizes
 
 
-def test_scores_still_read_row_order(bace):
-    """KNOWN GAP, deliberately pinned: the folds are order-invariant but the
-    1-NN rung on top of them is not. `_nn_oof` resolves tied neighbours with
-    `np.argmax`, which picks by position — 99 of 1513 test molecules have a
-    tied nearest neighbour here and 83 of those tie across different
-    activities. Break ties on a content key and this test should start
-    failing; that is the signal to re-run the audit and drop this test."""
-    smiles, y, scaffolds = bace
-    perm = np.random.default_rng(1).permutation(len(smiles))
+@pytest.mark.parametrize("csv,smiles_col,y_col", [
+    (BACE, "smiles", "pIC50"),
+    (Path(__file__).resolve().parent / "data" / "alogp_500.csv", "smiles", "AlogP"),
+], ids=["bace-1513", "alogp-500"])
+def test_verdict_survives_row_permutation(csv, smiles_col, y_col):
+    """The guarantee this engine sells: shuffle the input file and every
+    headline number comes back identical — not just the folds.
 
-    def lookup(sm, sc, act):
-        folds, _ = _scaffold_folds(sc, K)
-        return _nn_oof([_fingerprint(s, 2048, 2)[0] for s in sm], act, folds)["r2"]
+    Two datasets, because one proves the property held once. BACE is the
+    reference audit; alogp_500 is a different target on 500 of its molecules,
+    where the lookup baseline collapses on new scaffolds and the model really
+    does learn beyond it. Opposite verdicts, same invariance.
+    """
+    df = pd.read_csv(csv)
+    base = run_autopsy(df, smiles_col, y_col, k=5, seed=0).verdict
+    shuffled = run_autopsy(df.sample(frac=1.0, random_state=1).reset_index(drop=True),
+                           smiles_col, y_col, k=5, seed=0).verdict
 
-    base = lookup(smiles, scaffolds, y)
-    shuffled = lookup(smiles[perm], [scaffolds[i] for i in perm], y[perm])
+    for key in ("reported", "lookup_random", "survives_scaffold", "lookup_scaffold",
+                "learned_beyond_lookup", "permutation_floor", "lookup_pct_of_reported"):
+        assert shuffled[key] == base[key], f"{key}: {base[key]} -> {shuffled[key]}"
 
-    assert base != shuffled, "if this fails, 1-NN tie-breaking is order-free now"
+
+@pytest.mark.filterwarnings("ignore:An input array is constant")
+def test_lookup_averages_its_tied_neighbours():
+    """The baseline takes the mean of every neighbour at maximum similarity,
+    not whichever one came first.
+
+    Two training molecules are the same structure carrying different
+    activities, so anything is equidistant from both. Averaging predicts 2.0
+    for all three test molecules — residuals 0, 3, 6, so rmse sqrt(15) =
+    3.873. `np.argmax` would have kept the first neighbour's 1.0, for
+    residuals 1, 4, 7 and rmse sqrt(22) = 4.690.
+    """
+    fp = lambda smi: _fingerprint(smi, 2048, 2)[0]
+    bvs = [fp("CCO"), fp("CCO"), fp("CCCO"), fp("CCCCO"), fp("CCCCCO")]
+    y = np.array([1.0, 3.0, 2.0, 5.0, 8.0])
+    folds = [(np.array([0, 1]), np.array([2, 3, 4]))]
+
+    assert _nn_oof(bvs, y, folds)["rmse"] == pytest.approx(3.873, abs=1e-3)
