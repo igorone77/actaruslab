@@ -14,12 +14,25 @@ POST /autopsy/records        -> JSON body {records:[{smiles,y,date?}], ...} -> f
 GET  /                       -> the NEUTRA UI, if web/static has been built
 
 Serving the UI from this app is what makes it usable in a browser with one
-command: the page and the API share an origin, so nothing needs CORS. The
-CORS middleware below only matters for a UI hosted somewhere else, and is
-dev-open — lock it to the UI origin before deploying.
+command: the page and the API share an origin, so nothing needs CORS.
+
+Deployment knobs, all environment variables, all safe by default:
+
+    AUTOPSY_ALLOWED_ORIGINS   comma-separated origins allowed to call the API
+                              cross-site. Unset means same-origin only — no
+                              CORS headers at all, which is correct when this
+                              app serves its own UI. Set it only for a front
+                              end hosted elsewhere (a Vite dev server, a
+                              separate static host).
+    AUTOPSY_MAX_UPLOAD_MB     reject larger uploads with 413. Default 25.
+    AUTOPSY_MAX_ROWS          reject wider datasets with 413. Default 5000,
+                              the ceiling the O(n²) lookup rung is comfortable
+                              at. See the note on request timeouts in the
+                              README before raising it on a public host.
 """
 from __future__ import annotations
 import io
+import os
 from pathlib import Path
 from typing import Optional, List
 
@@ -34,11 +47,18 @@ from . import __version__
 
 app = FastAPI(title="ActarusLab · Model Autopsy", version=__version__)
 
-# Dev-open CORS. In production replace "*" with the UI origin.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
+MAX_UPLOAD_BYTES = int(float(os.getenv("AUTOPSY_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
+MAX_ROWS = int(os.getenv("AUTOPSY_MAX_ROWS", "5000"))
+
+# Same-origin only unless told otherwise. The UI this app serves needs no
+# CORS at all, so an open policy would only ever widen the attack surface of
+# a public deployment for nobody's benefit.
+_ORIGINS = [o.strip() for o in os.getenv("AUTOPSY_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"],
+    )
 
 
 @app.get("/health")
@@ -56,6 +76,11 @@ async def autopsy_csv(
     k: int = Form(5),
 ):
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV is {len(raw) / 1048576:.1f} MB; the limit is "
+                   f"{MAX_UPLOAD_BYTES / 1048576:.0f} MB.")
     try:
         df = pd.read_csv(io.BytesIO(raw))
     except Exception as e:
@@ -71,7 +96,7 @@ class Record(BaseModel):
 
 
 class RecordsRequest(BaseModel):
-    records: List[Record] = Field(..., min_length=40)
+    records: List[Record] = Field(..., min_length=40, max_length=MAX_ROWS)
     k: int = 5
     has_date: bool = False
 
@@ -87,6 +112,12 @@ def autopsy_records(req: RecordsRequest):
 
 # ── shared runner ─────────────────────────────────────────────────────
 def _run(df: pd.DataFrame, smiles: str, y: str, date: Optional[str], k: int):
+    if len(df) > MAX_ROWS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(df)} rows; this service audits up to {MAX_ROWS}. The "
+                   f"nearest-neighbour rung is O(n²), so larger sets belong in "
+                   f"the CLI, or behind an approximate-NN index.")
     try:
         res = run_autopsy(df, smiles, y, date, k=k)
     except AutopsyError as e:

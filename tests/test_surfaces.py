@@ -12,9 +12,11 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from fastapi import HTTPException
 
 from autopsy.engine import run_autopsy, AutopsyError
 from autopsy.report import render_html
+from autopsy import api
 from autopsy.api import health, autopsy_records, RecordsRequest, Record
 from autopsy.cli import main
 
@@ -89,3 +91,26 @@ def test_cli_reports_bad_column_as_exit_1(tmp_path, slice_df):
     csv = tmp_path / "slice.csv"
     slice_df.to_csv(csv, index=False)
     assert main([str(csv), "--smiles", "smiles", "--y", "nope", "--quiet"]) == 1
+
+
+def test_cors_is_closed_by_default():
+    """A public deployment must not answer cross-site calls unless asked to.
+    The UI this app serves is same-origin, so the middleware should be absent
+    entirely when AUTOPSY_ALLOWED_ORIGINS is unset."""
+    names = [m.cls.__name__ for m in api.app.user_middleware]
+    assert "CORSMiddleware" not in names, names
+
+
+def test_api_rejects_oversized_dataset(monkeypatch, slice_df):
+    """The lookup rung is O(n²), so the service caps what it will accept
+    rather than holding a worker open indefinitely."""
+    monkeypatch.setattr(api, "MAX_ROWS", 100)
+    req = RecordsRequest(
+        records=[Record(smiles=s, y=float(v))
+                 for s, v in slice_df[["smiles", "pIC50"]].itertuples(index=False)],
+        k=3,
+    )
+    with pytest.raises(HTTPException) as exc:
+        autopsy_records(req)
+    assert exc.value.status_code == 413
+    assert "300 rows" in exc.value.detail
