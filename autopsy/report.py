@@ -19,8 +19,12 @@ C = dict(
 
 KIND_COLOR = {"reported": C["green"], "survives": C["amber"], "temporal": C["cyan"],
               "lookup": C["red"], "floor": C["mut"]}
-FLAG_COLOR = {"SEVERE": C["red"], "LEAK": C["red"], "MODERATE": C["amber"],
-              "PARTIAL": C["amber"], "THIN": C["amber"], "LOW": C["green"],
+# Names come from the engine (see LEARNED_NET / _learned_flag there); this
+# only paints them. ARTIFACT is red because it marks a number that is not what
+# it looks like, which is the same class of warning as SEVERE leakage.
+FLAG_COLOR = {"SEVERE": C["red"], "LEAK": C["red"], "ARTIFACT": C["red"],
+              "MODERATE": C["amber"], "PARTIAL": C["amber"], "THIN": C["amber"],
+              "MARGINAL": C["amber"], "LOW": C["green"],
               "NET": C["cyan"], "TESTED": C["cyan"], "CLEAN": C["green"], "N/A": C["mut"]}
 
 

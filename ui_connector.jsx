@@ -152,10 +152,13 @@ export function useAutopsy() {
 // front end.
 // ─────────────────────────────────────────────────────────────────────
 
+// Flag names are decided by the engine (_learned_flag in engine.py); this
+// only paints them, so the cuts can never drift between the two. ARTIFACT is
+// red because it marks a number that is not what it looks like.
 export function flagColor(flag) {
   const C = {
-    SEVERE: "#D65A4E", LEAK: "#D65A4E",
-    MODERATE: "#E0B24D", PARTIAL: "#E0B24D", THIN: "#E0B24D",
+    SEVERE: "#D65A4E", LEAK: "#D65A4E", ARTIFACT: "#D65A4E",
+    MODERATE: "#E0B24D", PARTIAL: "#E0B24D", THIN: "#E0B24D", MARGINAL: "#E0B24D",
     NET: "#7DE3E0", TESTED: "#7DE3E0",
     CLEAN: "#6FC49B", LOW: "#6FC49B",
     "N/A": "#54706F",

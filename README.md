@@ -35,6 +35,34 @@ The headline numbers it extracts:
 Nothing is model magic: RDKit + scikit-learn + XGBoost do the numbers. The
 engine only decides how to *validate*, and reports what it finds.
 
+### Reading "learned beyond lookup"
+
+That subtraction only measures the model while the baseline it is subtracting
+still works. Once the scaffold-split lookup goes **negative** it is scoring
+worse than predicting the mean, and subtracting it *inflates* the difference —
+the model looks strong because the baseline collapsed. Four real datasets put
+four different stories behind similar-looking numbers, so the badge reads two
+dimensions rather than one:
+
+| badge | when | reading |
+|---|---|---|
+| `ARTIFACT` | scaffold-lookup < 0, any gain | the gain is the baseline failing, not structure learned. Read the scaffold rung instead. |
+| `NET` | sound baseline, learned ≥ 0.4 | real structure, beyond what averaging analogues gives |
+| `MARGINAL` | sound baseline, 0.2 < learned < 0.4 | a real advantage, a modest one |
+| `THIN` | sound baseline, learned ≤ 0.2 | little added; negative means the lookup beats the model |
+
+Measured: Lipophilicity 0.55 on a sound baseline → `NET`. ESOL 0.64 against a
+−0.40 baseline → `ARTIFACT`. CHEMBL233 0.24 → `MARGINAL`. BACE-1 0.146 →
+`THIN`. The 0.2 cut is where 0.146 is honestly thin against a reported 0.71;
+0.4 is where the model's own contribution stops being a minority share of a
+typical reported score.
+
+The cuts live in `LEARNED_NET` / `LEARNED_THIN` in `engine.py` and nowhere
+else — `report.py` and `ui_connector.jsx` colour the names the engine chose,
+they never re-derive them, so the three surfaces cannot drift apart.
+`tests/test_learned_flag.py` asserts all four cases plus the two real datasets
+in the repo.
+
 ---
 
 ## Install

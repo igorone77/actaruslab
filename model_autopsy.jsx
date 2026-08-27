@@ -31,7 +31,7 @@ const DEMO = {
     { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.597,
       note: "On disjoint chemical series the model holds 0.60 — real, but below the reported figure. This is what generalises to new chemistry." },
     { signal: "Learned structure", flag: "THIN", value: 0.146,
-      note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues." },
+      note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues, and there is little of it." },
     { signal: "Temporal test", flag: "N/A", value: null,
       note: "Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." },
     { signal: "Permutation floor", flag: "CLEAN", value: -0.222,

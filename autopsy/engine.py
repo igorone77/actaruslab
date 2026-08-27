@@ -344,7 +344,7 @@ def run_autopsy(
         "temporal": temporal,
         "permutation_floor": floor,
         "lookup_pct_of_reported": lookup_pct,
-        "headline": _headline(reported, lookup_pct, survives, learned, temporal, floor),
+        "headline": _headline(reported, lookup_pct, survives, learned, temporal, floor, nn_scaf),
     }
 
     readout = _readout(reported, lookup_rand, lookup_pct, survives, nn_scaf,
@@ -389,7 +389,7 @@ def _rung(model, cond, metrics, kind, note=None):
     return row
 
 
-def _headline(reported, lookup_pct, survives, learned, temporal, floor):
+def _headline(reported, lookup_pct, survives, learned, temporal, floor, nn_scaf=None):
     if reported <= 0:
         return "Model shows no predictive signal even on a random split."
     parts = []
@@ -399,7 +399,15 @@ def _headline(reported, lookup_pct, survives, learned, temporal, floor):
     if survives is not None:
         parts.append(f"On disjoint chemical series performance holds at {survives:.2f}.")
     if learned is not None:
-        parts.append(f"Beyond the lookup baseline, the model's own contribution is {learned:.3f}.")
+        if nn_scaf is not None and nn_scaf < 0:
+            # subtracting a baseline that scores below zero inflates the figure,
+            # so quoting it without that caveat would oversell the model
+            parts.append(f"Its apparent contribution over the lookup, {learned:.3f}, is inflated: "
+                         f"the lookup itself scores {nn_scaf:+.2f} on new scaffolds, worse than "
+                         f"predicting the mean, so the gap measures the baseline's failure rather "
+                         f"than the model's skill.")
+        else:
+            parts.append(f"Beyond the lookup baseline, the model's own contribution is {learned:.3f}.")
     if temporal is not None:
         parts.append(f"Forward in time it holds {temporal:.2f}.")
     if floor is not None and floor > 0.05:
@@ -407,6 +415,64 @@ def _headline(reported, lookup_pct, survives, learned, temporal, floor):
                      f"fix featurisation/splitting before trusting any number above.")
     return " ".join(parts)
 
+
+# ─────────────────────────────────────────────────────────────────────
+# how "learned structure" is read
+# ─────────────────────────────────────────────────────────────────────
+# learned = survives - lookup_scaffold, and that subtraction only means
+# something while the lookup baseline itself does. Once lookup_scaffold goes
+# negative the baseline is doing worse than predicting the mean, and
+# subtracting it *inflates* `learned`: the model looks good because the
+# baseline collapsed, not because it found structure. Measured on four real
+# sets, the same number tells four different stories:
+#
+#   Lipophilicity  learned 0.55   lookup +ve    beats a sound baseline
+#   ESOL           learned 0.64   lookup -0.40  artefact of the baseline failing
+#   CHEMBL233      learned 0.24   lookup +ve    real advantage, modest
+#   BACE-1         learned 0.146  lookup +0.45  thin
+#
+# So the flag reads two dimensions. The 0.2 cut is kept from the earlier
+# calibration on BACE, where 0.146 is honestly thin against a reported 0.71.
+# 0.4 is where the model's own contribution stops being a minority share of a
+# typical reported score and starts being the bulk of it.
+#
+# These four names are the only vocabulary; report.py and ui_connector.jsx
+# colour them but never re-derive them.
+LEARNED_NET = 0.4       # at or above, on a sound baseline: real structure added
+LEARNED_THIN = 0.2      # at or below: the addition is thin
+
+
+def _learned_flag(learned: float, lookup_scaffold) -> str:
+    """ARTIFACT | NET | MARGINAL | THIN — see the cuts above."""
+    if lookup_scaffold is not None and lookup_scaffold < 0:
+        return "ARTIFACT"
+    if learned >= LEARNED_NET:
+        return "NET"
+    if learned > LEARNED_THIN:
+        return "MARGINAL"
+    return "THIN"
+
+
+def _learned_note(flag: str, learned: float, survives, lookup_scaffold) -> str:
+    if flag == "ARTIFACT":
+        base = (f"Read this as a warning, not an achievement. The lookup baseline scores "
+                f"{lookup_scaffold:+.2f} on new scaffolds — worse than predicting the mean — so "
+                f"subtracting it inflates this figure. The model is not learning a lot; the "
+                f"similarity baseline is unreliable on new chemistry for this dataset.")
+        if survives is not None:
+            base += f" What the model actually holds on new series is the scaffold rung, {survives:.2f}."
+        return base
+    if flag == "NET":
+        return ("Scaffold performance minus the scaffold-split lookup, against a baseline that "
+                "still works. This is structure the model added over averaging its nearest analogues.")
+    if flag == "MARGINAL":
+        return ("Scaffold performance minus the scaffold-split lookup. A real advantage over "
+                "copying the nearest analogues, but a modest one.")
+    if learned < 0:
+        return ("Negative: on new chemical series the lookup baseline beats the model. Averaging "
+                "the nearest analogues would serve you better than this model does.")
+    return ("Scaffold performance minus the scaffold-split lookup. The only structure the model "
+            "added beyond averaging its nearest analogues, and there is little of it.")
 
 def _readout(reported, lookup_rand, lookup_pct, survives, nn_scaf, learned, temporal, floor):
     cards = []
@@ -420,16 +486,12 @@ def _readout(reported, lookup_rand, lookup_pct, survives, nn_scaf, learned, temp
     if survives is not None:
         cards.append({"signal": "Scaffold transfer", "flag": "PARTIAL", "value": survives,
                       "note": "Performance on genuinely new chemical series — what generalises beyond the training scaffolds."})
-    # learned structure
+    # learned structure — two dimensions: how much, and whether the baseline
+    # it is measured against was sound. See the cuts above.
     if learned is not None:
-        # Calibrated on BACE-1: the model's own contribution there is 0.147,
-        # and that reads as thin — a fifth of the 0.72 it reports. A 0.1 cut
-        # called it NET, which oversold the same number the tool exists to
-        # deflate. Above 0.2 the model is adding structure a lookup table
-        # cannot; below it, it is mostly recognising analogues.
-        flag = "NET" if learned > 0.2 else "THIN"
+        flag = _learned_flag(learned, nn_scaf)
         cards.append({"signal": "Learned structure", "flag": flag, "value": learned,
-                      "note": "Scaffold performance minus the scaffold-split lookup: the only structure the model added over averaging its nearest analogues."})
+                      "note": _learned_note(flag, learned, survives, nn_scaf)})
     # temporal
     cards.append({"signal": "Temporal test",
                   "flag": "N/A" if temporal is None else "TESTED",
