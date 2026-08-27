@@ -66,7 +66,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .engine import run_autopsy, AutopsyError
+from .engine import run_autopsy, precheck, AutopsyError
 from . import __version__
 
 app = FastAPI(title="ActarusLab · Model Autopsy", version=__version__)
@@ -119,15 +119,14 @@ def _check_size(df: pd.DataFrame) -> None:
             detail=f"need >= 40 rows to run an audit; got {len(df)}.")
 
 
-def _check_columns(df: pd.DataFrame, smiles: str, y: str, date: Optional[str]) -> None:
-    """Cheap enough to run before queueing, so a typo in a column name comes
-    back straight away instead of as a failed job a minute later."""
-    wanted = [smiles, y] + ([date] if date else [])
-    missing = [c for c in wanted if c not in df.columns]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail=f"column(s) {missing} not found. Available: {list(df.columns)}")
+def _precheck(df: pd.DataFrame, smiles: str, y: str, date: Optional[str]) -> None:
+    """The engine's own cheap validations, run before queueing, so a typo in a
+    column name or a constant activity column comes back in milliseconds
+    instead of as a failed job a minute later."""
+    try:
+        precheck(df, smiles, y, date)
+    except AutopsyError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # ── CSV upload path (what a browser file-picker sends) ────────────────
@@ -171,8 +170,14 @@ def _run(df: pd.DataFrame, smiles: str, y: str, date: Optional[str], k: int):
         res = run_autopsy(df, smiles, y, date, k=k)
     except AutopsyError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:  # unexpected — surface as 500 but don't leak internals
-        raise HTTPException(status_code=500, detail=f"autopsy failed: {type(e).__name__}")
+    except Exception:
+        # A class name is not a message. Anything the engine did not anticipate
+        # is our bug, and says so in words the uploader can act on.
+        raise HTTPException(
+            status_code=500,
+            detail="the audit could not be completed on this file. Nothing about it looked wrong "
+                   "up front, so this is a fault on our side rather than a problem with "
+                   "your data.")
     return res.to_dict()
 
 
@@ -217,8 +222,11 @@ def _work(job_id: str, df: pd.DataFrame, smiles: str, y: str,
         outcome = {"status": "done", "result": res.to_dict(), "progress": "complete"}
     except AutopsyError as e:
         outcome = {"status": "failed", "error": str(e), "progress": None}
-    except Exception as e:               # unexpected — do not leak internals
-        outcome = {"status": "failed", "error": f"autopsy failed: {type(e).__name__}",
+    except Exception:                    # our bug, not their data — say it in words
+        outcome = {"status": "failed",
+                   "error": "the audit could not be completed on this file. Nothing about it looked wrong "
+                   "up front, so this is a fault on our side rather than a problem with "
+                   "your data.",
                    "progress": None}
 
     with _lock:
@@ -238,7 +246,7 @@ async def submit_job(
     immediately with 4xx; only the slow part is deferred."""
     df = _parse_upload(await file.read())
     _check_size(df)
-    _check_columns(df, smiles, y, date)
+    _precheck(df, smiles, y, date)
 
     now = time.time()
     with _lock:

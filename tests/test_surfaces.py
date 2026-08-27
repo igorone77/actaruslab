@@ -59,7 +59,7 @@ def test_api_records_returns_full_result(slice_df):
         k=3,
     )
     out = autopsy_records(req)
-    assert set(out) == {"specimen", "ladder", "verdict", "readout", "meta"}
+    assert set(out) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
     assert out["specimen"]["n_compounds"] == 300
     assert out["verdict"]["reported"] is not None
 
@@ -70,7 +70,9 @@ def test_engine_rejects_bad_column(slice_df):
 
 
 def test_engine_rejects_tiny_dataset(slice_df):
-    with pytest.raises(AutopsyError, match=">= 40"):
+    """The message counts the rows and names the floor — see
+    tests/test_malformed_input.py for the full set of refusal messages."""
+    with pytest.raises(AutopsyError, match="at least 40"):
         run_autopsy(slice_df.head(10), "smiles", "pIC50")
 
 
@@ -85,7 +87,7 @@ def test_cli_writes_report_and_json(tmp_path, slice_df):
     assert rc == 0
     assert out_html.read_text().lstrip().startswith("<!DOCTYPE html>")
     data = json.loads(out_json.read_text())
-    assert set(data) == {"specimen", "ladder", "verdict", "readout", "meta"}
+    assert set(data) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
     assert data["verdict"]["reported"] is not None
 
 
@@ -138,7 +140,7 @@ def test_job_runs_to_a_readable_result(slice_df):
     out = api.job_status(jid)
     assert out["status"] == "done"
     assert out["progress"] == "complete"
-    assert set(out["result"]) == {"specimen", "ladder", "verdict", "readout", "meta"}
+    assert set(out["result"]) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
     assert out["elapsed"] >= 0
 
 
@@ -162,9 +164,10 @@ def test_unknown_job_is_404():
 
 def test_columns_are_checked_before_queueing(slice_df):
     """A typo in a column name should come back at submit, not a minute later
-    as a failed job."""
+    as a failed job. Same for anything else the engine can see for free —
+    see tests/test_malformed_input.py."""
     with pytest.raises(HTTPException) as exc:
-        api._check_columns(slice_df, "smiles", "nope", None)
+        api._precheck(slice_df, "smiles", "nope", None)
     assert exc.value.status_code == 422
     assert "nope" in exc.value.detail
 

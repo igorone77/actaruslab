@@ -46,11 +46,21 @@ import xgboost as xgb
 
 RDLogger.DisableLog("rdApp.*")
 
-__all__ = ["run_autopsy", "AutopsyError", "AutopsyResult"]
+__all__ = ["run_autopsy", "precheck", "AutopsyError", "AutopsyResult"]
+
+
+# Below this spread the target carries no information a model could be scored
+# against, and R² becomes the ratio of two rounding errors.
+MIN_TARGET_SD = 1e-6
+
+# Past this share of the file discarded, the result describes a subset.
+DROP_SEVERE_PCT = 20.0
 
 
 class AutopsyError(ValueError):
-    """Raised for malformed input the caller must fix (bad columns, empty data)."""
+    """Raised for malformed input the caller must fix. Its message is shown to
+    the person who uploaded the file, so it names what went wrong and what to
+    do — never an exception class or a status code."""
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -61,7 +71,9 @@ def _fingerprint(smiles: str, n_bits: int, radius: int):
     is the audit's sort key: it makes the row order a function of the
     molecules rather than of how the file happened to be written."""
     mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    if mol is None or mol.GetNumAtoms() == 0:
+        # an empty SMILES parses into a valid molecule with no atoms, whose
+        # all-zero fingerprint would join the audit as a phantom compound
         return None, None, None
     bv = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
     arr = np.zeros((n_bits,), dtype=np.int8)
@@ -97,11 +109,19 @@ def _model(seed: int) -> xgb.XGBRegressor:
     )
 
 
+def _finite(x):
+    """None rather than NaN/inf. Starlette serialises with allow_nan=False, so a
+    NaN metric used to surface as an unexplained 500 instead of a missing value;
+    a rung that could not be scored should read as unscored, everywhere."""
+    v = float(x)
+    return round(v, 3) if np.isfinite(v) else None
+
+
 def _metrics(y_true, y_pred) -> dict:
     return {
-        "r2": round(float(r2_score(y_true, y_pred)), 3),
-        "rmse": round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 3),
-        "spearman": round(float(spearmanr(y_true, y_pred).statistic), 3),
+        "r2": _finite(r2_score(y_true, y_pred)),
+        "rmse": _finite(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "spearman": _finite(spearmanr(y_true, y_pred).statistic),
     }
 
 
@@ -209,6 +229,7 @@ class AutopsyResult:
     ladder: list                    # ordered rungs, each a dict
     verdict: dict                   # headline numbers + interpretation
     readout: list                   # per-signal cards for the UI
+    warnings: list = field(default_factory=list)   # {level, text} — see _drop_warning
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -231,17 +252,14 @@ def run_autopsy(
     log=lambda msg: None,          # optional progress callback (CLI prints, API streams)
 ) -> AutopsyResult:
     # ---- validate ----------------------------------------------------
-    for col in (smiles_col, y_col):
-        if col not in df.columns:
-            raise AutopsyError(f"column '{col}' not found. Available: {list(df.columns)}")
-    if date_col and date_col not in df.columns:
-        raise AutopsyError(f"date column '{date_col}' not found. Available: {list(df.columns)}")
+    precheck(df, smiles_col, y_col, date_col)
 
+    n_rows_in = int(len(df))
     work = df[[smiles_col, y_col] + ([date_col] if date_col else [])].copy()
     work[y_col] = pd.to_numeric(work[y_col], errors="coerce")
+    n_bad_y = int(work[y_col].isna().sum())
+
     work = work.dropna(subset=[smiles_col, y_col])
-    if len(work) < 40:
-        raise AutopsyError(f"need >= 40 valid rows to run an audit; got {len(work)}.")
 
     # ---- featurise ---------------------------------------------------
     log("featurising molecules (ECFP)…")
@@ -251,6 +269,19 @@ def run_autopsy(
         if bv is not None:
             bvs.append(bv); arrs.append(arr); canon.append(cs); keep.append(i)
     n_bad = len(work) - len(keep)
+
+    if len(keep) < 40:
+        why = []
+        if n_bad:
+            why.append(f"{n_bad} had unreadable SMILES")
+        if n_bad_y:
+            why.append(f"{n_bad_y} had missing or non-numeric activity")
+        detail = f" ({'; '.join(why)})" if why else ""
+        raise AutopsyError(
+            f"only {len(keep)} of {n_rows_in} rows are usable{detail}, and an audit needs "
+            f"at least 40. Below that the folds are too small for the numbers to mean "
+            f"anything.")
+
     d = work.iloc[keep].reset_index(drop=True)
     X = np.vstack(arrs)
     y = d[y_col].astype(float).values
@@ -352,7 +383,11 @@ def run_autopsy(
 
     specimen = {
         "n_compounds": int(len(y)),
+        "n_rows_in": n_rows_in,
         "n_unparseable_dropped": n_bad,
+        "n_activity_dropped": n_bad_y,
+        "n_dropped_total": n_bad + n_bad_y,
+        "dropped_pct": round(100.0 * (n_bad + n_bad_y) / n_rows_in, 1),
         "n_scaffold_series": n_scaffolds,
         "n_singleton_series": n_singletons,
         "largest_series": largest,
@@ -371,8 +406,13 @@ def run_autopsy(
         "columns": {"smiles": smiles_col, "target": y_col, "date": date_col},
     }
 
-    return AutopsyResult(specimen=specimen, ladder=ladder,
-                         verdict=verdict, readout=readout, meta=meta)
+    warn = _drop_warning(n_rows_in, len(y), n_bad, n_bad_y)
+    warnings_out = [warn] if warn else []
+    if warn:
+        log(warn["text"])
+
+    return AutopsyResult(specimen=specimen, ladder=ladder, verdict=verdict,
+                         readout=readout, warnings=warnings_out, meta=meta)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -414,6 +454,82 @@ def _headline(reported, lookup_pct, survives, learned, temporal, floor, nn_scaf=
         parts.append(f"WARNING: permutation floor is {floor:.2f} (> 0) — the pipeline itself may be leaking; "
                      f"fix featurisation/splitting before trusting any number above.")
     return " ".join(parts)
+
+
+
+def precheck(df: pd.DataFrame, smiles_col: str, y_col: str,
+             date_col: Optional[str] = None) -> None:
+    """Every validation that costs nothing, so a caller can refuse a file in
+    milliseconds instead of queueing an audit it is going to reject anyway.
+
+    run_autopsy calls this itself and never assumes a caller did. Each message
+    is written for whoever uploaded the file: what is wrong, and what to do.
+    The bar is the missing-column case, which names both what is absent and
+    what is present.
+    """
+    for col in (smiles_col, y_col):
+        if col not in df.columns:
+            raise AutopsyError(f"column '{col}' not found. Available: {list(df.columns)}")
+    if date_col and date_col not in df.columns:
+        raise AutopsyError(f"date column '{date_col}' not found. Available: {list(df.columns)}")
+
+    n_rows_in = int(len(df))
+    if n_rows_in == 0:
+        raise AutopsyError("the file has no rows — there is nothing to audit.")
+
+    raw_y = df[y_col]
+    y_num = pd.to_numeric(raw_y, errors="coerce")
+
+    # A column of words fails every row for one reason, and blaming the rows
+    # sends the reader to inspect their SMILES, which were fine.
+    if int(y_num.isna().sum()) == n_rows_in:
+        seen = [repr(v) for v in pd.Series(raw_y).dropna().astype(str).unique()[:3]]
+        holds = f" It holds {', '.join(seen)}." if seen else " It is empty."
+        raise AutopsyError(
+            f"the activity column '{y_col}' contains no numeric values.{holds} "
+            f"An audit needs a number per molecule to predict — an IC50, a pIC50, "
+            f"a measured property. Point --y at the column that holds it.")
+
+    # Constant targets are the dangerous case: nothing raises, every rung scores
+    # a perfect 1.00 including the permutation control, and the audit reads as a
+    # triumph. Refuse before computing anything.
+    y = y_num.dropna().astype(float).values
+    if len(y):
+        n_distinct = int(len(np.unique(y)))
+        sd = float(np.std(y))
+        if n_distinct == 1:
+            raise AutopsyError(
+                f"the activity column '{y_col}' holds one repeated value ({y[0]:g}) — "
+                f"zero variance, so there is nothing to predict and no model can be scored "
+                f"against it. Check that --y points at the measurement rather than a label "
+                f"or a constant.")
+        if sd < MIN_TARGET_SD:
+            raise AutopsyError(
+                f"the activity column '{y_col}' barely varies: standard deviation {sd:.2g} "
+                f"across {n_distinct} distinct values. There is not enough variation to score "
+                f"a model against, and any R² would be floating-point noise.")
+
+
+def _drop_warning(n_rows_in, n_kept, n_bad_smiles, n_bad_y):
+    """Rows silently discarded are the difference between auditing a file and
+    auditing whatever survived of it. Say so, and say it louder past a fifth."""
+    n_dropped = n_bad_smiles + n_bad_y
+    if not n_dropped:
+        return None
+    pct = 100.0 * n_dropped / n_rows_in
+    bits = []
+    if n_bad_smiles:
+        bits.append(f"unreadable SMILES ({n_bad_smiles})")
+    if n_bad_y:
+        bits.append(f"missing or non-numeric activity ({n_bad_y})")
+    text = (f"{n_dropped} of {n_rows_in} rows dropped — {', '.join(bits)}. "
+            f"The audit below covers the {n_kept} that remain.")
+    if pct > DROP_SEVERE_PCT:
+        text += (f" That is {pct:.0f}% of the file, so these numbers describe a "
+                 f"subset and may not represent your dataset.")
+    return {"level": "severe" if pct > DROP_SEVERE_PCT else "note",
+            "text": text, "n_dropped": n_dropped, "n_rows_in": n_rows_in,
+            "pct": round(pct, 1)}
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -58,6 +58,12 @@ def main(argv=None):
 
     v, s = res.verdict, res.specimen
 
+    # ── what was thrown away, before anything that was computed ─────
+    for w in res.warnings:
+        tone = T.red if w["level"] == "severe" else T.amber
+        print()
+        print(f"  {tone}⚠ {w['text']}{T.end}")
+
     # ── terminal verdict ────────────────────────────────────────────
     print()
     print(f"{T.cyan}{T.bold}  MODEL AUTOPSY — {args.csv}{T.end}")

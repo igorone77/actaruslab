@@ -99,6 +99,20 @@ def _strip(verdict) -> str:
     return out
 
 
+def _warnings(warns) -> str:
+    """Rows the audit never saw belong above the numbers, not in a footnote."""
+    out = ""
+    for w in warns:
+        tone = C["red"] if w["level"] == "severe" else C["amber"]
+        out += (f'<div style="margin-bottom:14px;padding:12px 15px;border-radius:8px;'
+                f'background:{C["panel"]};border:1px solid {tone}55;border-left:2px solid {tone}">'
+                f'<span style="font-family:monospace;font-size:11px;font-weight:600;color:{tone}">'
+                f'&#9888; DROPPED ROWS</span>'
+                f'<div style="font-size:13px;line-height:1.55;color:{C["text"]};margin-top:6px">'
+                f'{html.escape(w["text"])}</div></div>')
+    return out
+
+
 def _readout(cards) -> str:
     out = ""
     for c in cards:
@@ -172,6 +186,8 @@ def render_html(res: AutopsyResult, source: str = "") -> str:
     <div style="font-size:11px;font-weight:600;letter-spacing:.28em;color:{C["textDim"]};margin-bottom:6px">MODEL FORENSICS</div>
     <div style="font-style:italic;font-size:14px;color:{C["cyanDim"]}">Post-mortem of <b style="color:{C['text']};font-style:normal">{src}</b> — {s['n_compounds']} compounds, {s['n_scaffold_series']} scaffold series.</div>
   </header>
+
+  {_warnings(res.warnings)}
 
   <div class="grid">
     <section class="panel">

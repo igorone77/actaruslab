@@ -35,6 +35,36 @@ The headline numbers it extracts:
 Nothing is model magic: RDKit + scikit-learn + XGBoost do the numbers. The
 engine only decides how to *validate*, and reports what it finds.
 
+### What gets refused, and what gets flagged
+
+A refusal names what is wrong and what to do, never an exception class or a
+status code. Everything cheap enough to see without computing is checked
+before the audit is queued, so a bad column costs a second rather than a job:
+
+| input | outcome |
+|---|---|
+| column not in the file | names it and lists what *is* there |
+| activity column holds text | names the column and shows what it holds — not "0 valid rows" |
+| activity is one repeated value | refused: zero variance, nothing to predict |
+| activity barely varies | refused: any R² would be floating-point noise |
+| fewer than 40 usable rows | counts them and says why they were lost |
+| empty file | says so |
+
+The constant-activity case is why this matters. It did not raise: it produced
+a complete audit reading **R² 1.00 on every rung**, permutation control
+included, and the CLI printed it. The API only escaped because the NaN
+correlation hit a JSON serialiser that refuses NaN — an accident, surfacing as
+an unexplained 500. Metrics that cannot be computed now come back as `null`
+rather than NaN, so that whole class of failure is gone.
+
+Rows the engine discards are reported rather than absorbed. `specimen` counts
+them (`n_rows_in`, `n_unparseable_dropped`, `n_activity_dropped`,
+`dropped_pct`) and `result.warnings` carries a sentence the CLI, the HTML
+report and the UI all display above the numbers — louder past 20%, where the
+audit describes a subset rather than the file. An empty SMILES counts as
+unreadable: RDKit parses it into a valid molecule with no atoms, whose
+all-zero fingerprint would otherwise join the audit as a phantom compound.
+
 ### Reading "learned beyond lookup"
 
 That subtraction only measures the model while the baseline it is subtracting

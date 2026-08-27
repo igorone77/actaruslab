@@ -25,6 +25,7 @@ const DEMO = {
   learned: 0.146,
   lookupPct: 81,
   headline: null,          // demo keeps the hand-written verdict below
+  warnings: [],            // the benchmark drops nothing
   readout: [
     { signal: "Similarity leakage", flag: "SEVERE", value_pct: 81,
       note: "A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." },
@@ -57,6 +58,7 @@ function fromResult(res, source) {
     learned: v.learned_beyond_lookup, lookupPct: v.lookup_pct_of_reported,
     headline: v.headline,
     readout: res.readout,
+    warnings: res.warnings || [],
     specimen: res.specimen,
     meta: `${m.featurisation} · ${m.k_folds}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED ${m.seed}`,
   };
@@ -180,6 +182,20 @@ export default function ModelAutopsyNeutra() {
           </Panel>
 
           <Panel title="POST-MORTEM · DISTANCE FROM THE HONEST SCORE">
+            {(D.warnings || []).map((w, i) => {
+              const tone = w.level === "severe" ? C.red : C.amber;
+              return (
+                <div key={i} style={{ marginBottom: 14, padding: "12px 15px", borderRadius: 8,
+                  background: C.panel, border: `1px solid ${tone}55`, borderLeft: `2px solid ${tone}` }}>
+                  <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: tone }}>
+                    ⚠ DROPPED ROWS
+                  </div>
+                  <div style={{ fontFamily: sans, fontSize: 13, lineHeight: 1.55, color: C.text, marginTop: 6 }}>
+                    {w.text}
+                  </div>
+                </div>
+              );
+            })}
             <LadderChart rungs={D.rungs} revealed={revealed} reported={D.reported} />
 
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
