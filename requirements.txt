@@ -14,3 +14,6 @@ rdkit>=2023.9
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
 python-multipart>=0.0.9
+
+# subscription billing (Checkout, webhooks, customer portal)
+stripe>=9,<14

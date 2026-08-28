@@ -1,0 +1,124 @@
+{
+  "specimen": {
+    "n_compounds": 1513,
+    "n_rows_in": 1513,
+    "n_unparseable_dropped": 0,
+    "n_activity_dropped": 0,
+    "n_dropped_total": 0,
+    "dropped_pct": 0.0,
+    "n_scaffold_series": 377,
+    "n_singleton_series": 200,
+    "largest_series": 63,
+    "largest_series_pct": 4.2,
+    "target_mean": 6.522,
+    "target_sd": 1.342,
+    "exact_duplicate_smiles": 0,
+    "has_dates": false
+  },
+  "ladder": [
+    {
+      "model": "XGBoost",
+      "condition": "random split",
+      "kind": "reported",
+      "r2": 0.709,
+      "rmse": 0.724,
+      "spearman": 0.819
+    },
+    {
+      "model": "1-NN lookup",
+      "condition": "random split",
+      "kind": "lookup",
+      "r2": 0.572,
+      "rmse": 0.878,
+      "spearman": 0.749
+    },
+    {
+      "model": "XGBoost",
+      "condition": "scaffold split \u00b7 377 series",
+      "kind": "survives",
+      "r2": 0.597,
+      "rmse": 0.852,
+      "spearman": 0.746
+    },
+    {
+      "model": "1-NN lookup",
+      "condition": "scaffold split",
+      "kind": "lookup",
+      "r2": 0.451,
+      "rmse": 0.995,
+      "spearman": 0.695
+    },
+    {
+      "model": "XGBoost",
+      "condition": "temporal split",
+      "kind": "temporal",
+      "r2": null,
+      "rmse": null,
+      "spearman": null,
+      "note": "no assay dates supplied"
+    },
+    {
+      "model": "Permutation",
+      "condition": "shuffled target",
+      "kind": "floor",
+      "r2": -0.222,
+      "rmse": 1.483,
+      "spearman": 0.02
+    }
+  ],
+  "verdict": {
+    "reported": 0.709,
+    "lookup_random": 0.572,
+    "survives_scaffold": 0.597,
+    "lookup_scaffold": 0.451,
+    "learned_beyond_lookup": 0.146,
+    "temporal": null,
+    "permutation_floor": -0.222,
+    "lookup_pct_of_reported": 81,
+    "headline": "81% of the reported R\u00b2 0.71 is reproducible by a pure nearest-neighbour lookup \u2014 recognition of known analogues, not learned SAR. On disjoint chemical series performance holds at 0.60. Beyond the lookup baseline, the model's own contribution is 0.146."
+  },
+  "readout": [
+    {
+      "signal": "Similarity leakage",
+      "flag": "SEVERE",
+      "value_pct": 81,
+      "note": "Share of the reported score a bare nearest-neighbour lookup reproduces. High means the model is rewarded for recognising known analogues."
+    },
+    {
+      "signal": "Scaffold transfer",
+      "flag": "PARTIAL",
+      "value": 0.597,
+      "note": "Performance on genuinely new chemical series \u2014 what generalises beyond the training scaffolds."
+    },
+    {
+      "signal": "Learned structure",
+      "flag": "THIN",
+      "value": 0.146,
+      "note": "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues, and there is little of it."
+    },
+    {
+      "signal": "Temporal test",
+      "flag": "N/A",
+      "value": null,
+      "note": "Generalisation forward in time. Activates when assay dates are supplied \u2014 the split a random fold hides entirely."
+    },
+    {
+      "signal": "Permutation floor",
+      "flag": "CLEAN",
+      "value": -0.222,
+      "note": "Shuffled-target control. Should collapse toward zero; anything well above signals a pipeline leak."
+    }
+  ],
+  "warnings": [],
+  "meta": {
+    "featurisation": "ECFP4 \u00b7 2048 bit",
+    "model": "XGBoost (400 trees, depth 6)",
+    "k_folds": 5,
+    "seed": 0,
+    "columns": {
+      "smiles": "smiles",
+      "target": "pIC50",
+      "date": null
+    }
+  }
+}

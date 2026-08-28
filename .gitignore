@@ -4,3 +4,6 @@ __pycache__/
 nohup.out
 .venv/
 node_modules/
+autopsy.db
+*.db-wal
+*.db-shm

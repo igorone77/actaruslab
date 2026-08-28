@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useAutopsy, flagColor, engineReachable } from "./ui_connector.jsx";
+import { useAutopsy, flagColor, engineReachable, subscriberKey, setSubscriberKey } from "./ui_connector.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // MODEL AUTOPSY — ActarusLab · NEUTRA-language build
@@ -94,8 +94,9 @@ export default function ModelAutopsyNeutra() {
   const [file, setFile] = useState(null);
   const [cols, setCols] = useState({ smiles: "smiles", y: "pIC50", date: "" });
   const [engineUp, setEngineUp] = useState(false);
+  const [hasKey] = useState(() => !!subscriberKey());
   const timers = useRef([]);
-  const { result, status, error, progress, runFromFile } = useAutopsy();
+  const { result, status, error, progress, paywall, runFromFile } = useAutopsy();
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   useEffect(() => {
@@ -165,6 +166,7 @@ export default function ModelAutopsyNeutra() {
               </div>
             </div>
             <Ghost label={result ? "LIVE" : engineUp ? "ENGINE READY" : "BENCHMARK"} on={!!result || engineUp} />
+            {hasKey && <Ghost label="SUBSCRIBED" on />}
             <Ghost label="SPECIMEN" />
           </div>
         </header>
@@ -232,9 +234,28 @@ export default function ModelAutopsyNeutra() {
             </div>
 
             {error && (
-              <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 8, background: C.panel, border: `1px solid ${C.redDim}`, borderLeft: `2px solid ${C.red}` }}>
-                <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em", color: C.red, marginBottom: 8 }}>AUTOPSY FAILED</div>
+              <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 8, background: C.panel,
+                border: `1px solid ${paywall ? C.edge : C.redDim}`,
+                borderLeft: `2px solid ${paywall ? C.cyan : C.red}` }}>
+                <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em",
+                  color: paywall ? C.cyan : C.red, marginBottom: 8 }}>
+                  {paywall ? "SUBSCRIPTION REQUIRED" : "AUTOPSY FAILED"}
+                </div>
                 <div style={{ fontFamily: sans, fontSize: 13.5, lineHeight: 1.55, color: C.text }}>{error}</div>
+                {paywall && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                    <a href={paywall} style={{ fontFamily: mono, fontSize: 12, fontWeight: 600,
+                      letterSpacing: "0.08em", padding: "10px 16px", borderRadius: 8, textDecoration: "none",
+                      color: C.bg0, background: `linear-gradient(180deg, ${C.ice}, ${C.cyan})`,
+                      border: `1px solid ${C.cyan}` }}>SUBSCRIBE</a>
+                    <button onClick={() => {
+                      const k = window.prompt("Paste your access key (ma_…)");
+                      if (k) { setSubscriberKey(k.trim()); window.location.reload(); }
+                    }} style={{ fontFamily: mono, fontSize: 12, fontWeight: 600, letterSpacing: "0.08em",
+                      cursor: "pointer", padding: "10px 16px", borderRadius: 8, color: C.text,
+                      background: C.panelHi, border: `1px solid ${C.edge}` }}>I HAVE A KEY</button>
+                  </div>
+                )}
               </div>
             )}
 

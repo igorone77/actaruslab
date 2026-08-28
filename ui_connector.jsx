@@ -18,6 +18,36 @@ const API_BASE = (typeof window !== "undefined" && window.__AUTOPSY_API__) || ".
 
 const POLL_MS = 1200;
 
+// A subscriber's key. Kept in localStorage so it survives a reload, and
+// accepted from ?key=… once so a purchase confirmation can hand it over in a
+// link. Never sent anywhere but this app's own API.
+const KEY_STORE = "autopsy_key";
+
+export function subscriberKey() {
+  try {
+    const fromUrl = new URLSearchParams(location.search).get("key");
+    if (fromUrl) {
+      localStorage.setItem(KEY_STORE, fromUrl);
+      history.replaceState({}, "", location.pathname);   // keep it out of the bar
+      return fromUrl;
+    }
+    return localStorage.getItem(KEY_STORE) || "";
+  } catch {
+    return "";                                            // private mode, no store
+  }
+}
+
+export function setSubscriberKey(key) {
+  try {
+    key ? localStorage.setItem(KEY_STORE, key) : localStorage.removeItem(KEY_STORE);
+  } catch { /* nothing to do if storage is blocked */ }
+}
+
+function auth() {
+  const k = subscriberKey();
+  return k ? { Authorization: `Bearer ${k}` } : {};
+}
+
 // Is there an engine behind this page? Served by autopsy.api the answer is
 // yes; opened as a bare file or on a static host it is no, and the UI drops
 // its upload controls rather than offering a button that cannot work.
@@ -38,6 +68,7 @@ export function useAutopsy() {
   const [status, setStatus] = useState("idle");   // idle | running | done | error
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(null); // the engine's current rung
+  const [paywall, setPaywall] = useState(null);   // checkout URL when unpaid
 
   // Path A — user picks a CSV file (browser file input).
   //
@@ -56,17 +87,24 @@ export function useAutopsy() {
 
     const fail = async (res) => {
       const detail = await res.json().catch(() => ({}));
-      throw new Error(detail.detail || `HTTP ${res.status}`);
+      const err = new Error(detail.detail || "the request could not be completed");
+      if (res.status === 402) {
+        err.paywall = true;
+        err.checkoutUrl = res.headers.get("X-Checkout-URL") || `${API_BASE}/billing/checkout`;
+      }
+      throw err;
     };
 
     try {
-      const res = await fetch(`${API_BASE}/autopsy/jobs`, { method: "POST", body: form });
+      const res = await fetch(`${API_BASE}/autopsy/jobs`, {
+        method: "POST", body: form, headers: auth(),
+      });
       if (!res.ok) await fail(res);
       const { job_id } = await res.json();
 
       for (;;) {
         await new Promise((r) => setTimeout(r, POLL_MS));
-        const poll = await fetch(`${API_BASE}/autopsy/jobs/${job_id}`);
+        const poll = await fetch(`${API_BASE}/autopsy/jobs/${job_id}`, { headers: auth() });
         if (!poll.ok) await fail(poll);
         const job = await poll.json();
         setProgress(job.progress || job.status);
@@ -77,7 +115,8 @@ export function useAutopsy() {
         if (job.status === "failed") throw new Error(job.error);
       }
     } catch (e) {
-      setError(e.message); setStatus("error"); setProgress(null); throw e;
+      setError(e.message); setPaywall(e.paywall ? e.checkoutUrl : null);
+      setStatus("error"); setProgress(null); throw e;
     }
   }, []);
 
@@ -87,7 +126,7 @@ export function useAutopsy() {
     try {
       const res = await fetch(`${API_BASE}/autopsy/records`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...auth() },
         body: JSON.stringify({ records, k, has_date: hasDate }),
       });
       if (!res.ok) {
@@ -102,7 +141,7 @@ export function useAutopsy() {
     }
   }, []);
 
-  return { result, status, error, progress, runFromFile, runFromRecords };
+  return { result, status, error, progress, paywall, runFromFile, runFromRecords };
 }
 
 // ─────────────────────────────────────────────────────────────────────

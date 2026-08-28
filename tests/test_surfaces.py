@@ -25,6 +25,20 @@ from autopsy.cli import main
 BACE = Path(__file__).resolve().parent.parent / "bace.csv"
 
 
+@pytest.fixture()
+def subscriber(tmp_path, monkeypatch):
+    """A real paid subscriber on a throwaway database. The paid endpoints take
+    one as a dependency now; these tests are about the surfaces behind the
+    paywall, not the paywall itself (tests/test_billing.py covers that)."""
+    import importlib, time
+    monkeypatch.setenv("AUTOPSY_DB", str(tmp_path / "subs.db"))
+    import autopsy.billing as b
+    importlib.reload(b)
+    b.init_db()
+    key = b.create_subscriber("t@t.t", "cus_t", "sub_t", "active", time.time() + 86400)
+    return b.by_key(key)
+
+
 @pytest.fixture(scope="module")
 def slice_df():
     return pd.read_csv(BACE, usecols=["smiles", "pIC50"]).head(300)
@@ -52,13 +66,13 @@ def test_api_health():
     assert health()["status"] == "ok"
 
 
-def test_api_records_returns_full_result(slice_df):
+def test_api_records_returns_full_result(slice_df, subscriber):
     req = RecordsRequest(
         records=[Record(smiles=s, y=float(v))
                  for s, v in slice_df[["smiles", "pIC50"]].itertuples(index=False)],
         k=3,
     )
-    out = autopsy_records(req)
+    out = autopsy_records(req, subscriber)
     assert set(out) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
     assert out["specimen"]["n_compounds"] == 300
     assert out["verdict"]["reported"] is not None
@@ -105,7 +119,7 @@ def test_cors_is_closed_by_default():
     assert "CORSMiddleware" not in names, names
 
 
-def test_api_rejects_oversized_dataset(monkeypatch, slice_df):
+def test_api_rejects_oversized_dataset(monkeypatch, slice_df, subscriber):
     """The lookup rung is O(n²), so the service caps what it will accept
     rather than holding a worker open indefinitely."""
     monkeypatch.setattr(api, "MAX_ROWS", 100)
@@ -115,7 +129,7 @@ def test_api_rejects_oversized_dataset(monkeypatch, slice_df):
         k=3,
     )
     with pytest.raises(HTTPException) as exc:
-        autopsy_records(req)
+        autopsy_records(req, subscriber)
     assert exc.value.status_code == 413
     assert "300 rows" in exc.value.detail
 

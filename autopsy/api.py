@@ -52,6 +52,7 @@ Redis or a database behind the same two endpoints.
 """
 from __future__ import annotations
 import io
+import json
 import os
 import threading
 import time
@@ -61,15 +62,20 @@ from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import billing
+from .billing import QuotaExhausted, require_subscription
 from .engine import run_autopsy, precheck, AutopsyError
 from . import __version__
 
 app = FastAPI(title="ActarusLab · Model Autopsy", version=__version__)
+
+billing.init_db()
+app.include_router(billing.router)
 
 MAX_UPLOAD_BYTES = int(float(os.getenv("AUTOPSY_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
 MAX_ROWS = int(os.getenv("AUTOPSY_MAX_ROWS", "5000"))
@@ -137,8 +143,11 @@ async def autopsy_csv(
     y: str = Form(...),
     date: Optional[str] = Form(None),
     k: int = Form(5),
+    sub=Depends(require_subscription),
 ):
-    return _run(_parse_upload(await file.read()), smiles, y, date, k)
+    df = _parse_upload(await file.read())
+    _precheck(df, smiles, y, date)
+    return _metered(sub, lambda: _run(df, smiles, y, date, k))
 
 
 # ── JSON records path (what the UI can send after in-browser parsing) ─
@@ -155,12 +164,53 @@ class RecordsRequest(BaseModel):
 
 
 @app.post("/autopsy/records")
-def autopsy_records(req: RecordsRequest):
+def autopsy_records(req: RecordsRequest, sub=Depends(require_subscription)):
     rows = [{"smiles": r.smiles, "y": r.y, **({"date": r.date} if r.date is not None else {})}
             for r in req.records]
     df = pd.DataFrame(rows)
     date_col = "date" if (req.has_date and "date" in df.columns) else None
-    return _run(df, "smiles", "y", date_col, req.k)
+    _precheck(df, "smiles", "y", date_col)
+    return _metered(sub, lambda: _run(df, "smiles", "y", date_col, req.k))
+
+
+# ── metering ──────────────────────────────────────────────────────────
+def _metered(sub, work):
+    """Spend one audit from the cycle, and give it back if the failure was
+    ours. A subscriber must never lose one of their 20 to our bug."""
+    if sub is None:                      # not a selling deployment
+        return work()
+    try:
+        billing.reserve_audit(sub["key_hash"])
+    except QuotaExhausted as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"you have used all {billing.QUOTA} audits in this billing "
+                   f"cycle. The count resets when the subscription renews.",
+            headers={"X-Checkout-URL": billing.checkout_url()})
+    try:
+        return work()
+    except HTTPException as e:
+        if e.status_code >= 500:            # our fault, not their data
+            billing.refund_audit(sub["key_hash"])
+        raise
+    except Exception:
+        billing.refund_audit(sub["key_hash"])
+        raise
+
+
+# ── the free demo ─────────────────────────────────────────────────────
+_DEMO = Path(__file__).resolve().parent / "demo_result.json"
+
+
+@app.get("/autopsy/demo")
+def autopsy_demo():
+    """The BACE-1 audit, precomputed, outside the paywall. It is the showcase:
+    a real result from this engine that anyone can read before paying."""
+    if not _DEMO.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="the demo result has not been generated on this deployment.")
+    return json.loads(_DEMO.read_text())
 
 
 # ── shared runner ─────────────────────────────────────────────────────
@@ -223,6 +273,10 @@ def _work(job_id: str, df: pd.DataFrame, smiles: str, y: str,
     except AutopsyError as e:
         outcome = {"status": "failed", "error": str(e), "progress": None}
     except Exception:                    # our bug, not their data — say it in words
+        with _lock:
+            kh = (_jobs.get(job_id) or {}).get("key_hash")
+        if kh:
+            billing.refund_audit(kh)
         outcome = {"status": "failed",
                    "error": "the audit could not be completed on this file. Nothing about it looked wrong "
                    "up front, so this is a fault on our side rather than a problem with "
@@ -241,6 +295,7 @@ async def submit_job(
     y: str = Form(...),
     date: Optional[str] = Form(None),
     k: int = Form(5),
+    sub=Depends(require_subscription),
 ):
     """Validate now, audit later. Bad columns and oversized data still fail
     immediately with 4xx; only the slow part is deferred."""
@@ -259,17 +314,45 @@ async def submit_job(
         job_id = uuid.uuid4().hex
         _jobs[job_id] = {"status": "queued", "progress": "queued", "result": None,
                          "error": None, "created": now, "started": None,
-                         "finished": None, "rows": int(len(df))}
+                         "finished": None, "rows": int(len(df)),
+                         "key_hash": sub["key_hash"] if sub else None}
+
+    # Spent here rather than on completion: a queued audit already holds a
+    # worker, and refunded below if the failure turns out to be ours.
+    if sub is None:                      # not a selling deployment
+        _executor.submit(_work, job_id, df, smiles, y, date, k)
+        return {"job_id": job_id, "status": "queued", "rows": int(len(df))}
+    try:
+        used = billing.reserve_audit(sub["key_hash"])
+    except QuotaExhausted:
+        with _lock:
+            _jobs.pop(job_id, None)
+        raise HTTPException(
+            status_code=402,
+            detail=f"you have used all {billing.QUOTA} audits in this billing "
+                   f"cycle. The count resets when the subscription renews.",
+            headers={"X-Checkout-URL": billing.checkout_url()})
 
     _executor.submit(_work, job_id, df, smiles, y, date, k)
-    return {"job_id": job_id, "status": "queued", "rows": int(len(df))}
+    return {"job_id": job_id, "status": "queued", "rows": int(len(df)),
+            "audits_used": used,
+            "audits_per_cycle": billing.QUOTA}
 
 
 @app.get("/autopsy/jobs/{job_id}")
-def job_status(job_id: str):
+def job_status(job_id: str, sub=Depends(require_subscription)):
+    """An audit result is the subscriber's data, so only the key that
+    submitted the job can read it. Job ids are unguessable, but that is not a
+    reason to serve one to whoever asks."""
     with _lock:
         job = _jobs.get(job_id)
         if job is None:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown job — it expired, or the service restarted")
+        if sub is not None and job.get("key_hash") and job["key_hash"] != sub["key_hash"]:
+            # Same answer as a job that does not exist: confirming it is
+            # someone else's would leak that it exists at all.
             raise HTTPException(
                 status_code=404,
                 detail="unknown job — it expired, or the service restarted")

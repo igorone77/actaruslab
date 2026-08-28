@@ -35,6 +35,39 @@ The headline numbers it extracts:
 Nothing is model magic: RDKit + scikit-learn + XGBoost do the numbers. The
 engine only decides how to *validate*, and reports what it finds.
 
+### Subscription
+
+€199/month, 20 audits per billing cycle, blocked until renewal past that.
+`/health` and `GET /autopsy/demo` — the precomputed BACE-1 audit — stay free;
+everything under `/autopsy/` that computes on your data is behind the paywall
+and answers **402** with the checkout link when it is not paid.
+
+**The paywall follows the Stripe key.** A deployment with no
+`STRIPE_SECRET_KEY` cannot take a payment, so it does not gate: the laptop
+install and the private container keep working exactly as before. Set the key
+and the paywall activates. The corollary to be deliberate about — publishing
+this on the open internet *without* Stripe configured serves audits to
+everyone, which is a choice rather than an accident, since such a deployment
+has no way to charge for them either.
+
+Stripe Checkout takes the payment, a signature-verified webhook grants access,
+and the Stripe customer portal handles cancellation. A subscription issues one
+API key, shown once and stored only as a SHA-256 hash, presented as
+`Authorization: Bearer ma_…` or the `autopsy_key` cookie. Audit results are
+readable only by the key that submitted them.
+
+Subscriber records live in SQLite (`AUTOPSY_DB`) rather than in memory: a
+restart may forget a running audit, but it may never forget who paid. **Point
+it at a persistent volume** — on an ephemeral filesystem a redeploy wipes
+paying subscribers. A scaled deployment wants Postgres behind the same
+functions.
+
+An audit is spent when the job is accepted and refunded if the failure is
+ours, so nobody loses one of their 20 to a bug on our side.
+
+- `docs/BILLING_SETUP.md` — what to do in Stripe and in the deploy, in order
+- `docs/TERMS.md` — draft terms, with the clauses needing a lawyer marked
+
 ### What gets refused, and what gets flagged
 
 A refusal names what is wrong and what to do, never an exception class or a
