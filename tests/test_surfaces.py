@@ -27,9 +27,11 @@ BACE = Path(__file__).resolve().parent.parent / "bace.csv"
 
 @pytest.fixture()
 def subscriber(tmp_path, monkeypatch):
-    """A real paid subscriber on a throwaway database. The paid endpoints take
-    one as a dependency now; these tests are about the surfaces behind the
-    paywall, not the paywall itself (tests/test_billing.py covers that)."""
+    """A real paid subscriber on a throwaway database.
+
+    Holding a live subscription is what buys the reserved tier — the audit as
+    the engine built it. These tests are about that full shape, not about the
+    paywall (tests/test_billing.py) or the split (tests/test_tiers.py)."""
     import importlib, time
     monkeypatch.setenv("AUTOPSY_DB", str(tmp_path / "subs.db"))
     import autopsy.billing as b
@@ -73,7 +75,9 @@ def test_api_records_returns_full_result(slice_df, subscriber):
         k=3,
     )
     out = autopsy_records(req, subscriber)
-    assert set(out) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
+    assert set(out) == {"tier", "specimen", "ladder", "verdict", "readout",
+                        "warnings", "meta"}
+    assert out["tier"] == "reserved"
     assert out["specimen"]["n_compounds"] == 300
     assert out["verdict"]["reported"] is not None
 
@@ -139,32 +143,40 @@ def test_api_rejects_oversized_dataset(monkeypatch, slice_df, subscriber):
 # drive the worker directly — no threads, no live server — since what needs
 # pinning is the state machine, not the executor.
 
-def _queue(rows: int) -> str:
+def _queue(rows: int):
+    """Returns (job_id, job_token). The token is the claim on the result —
+    api.submit_job mints one for every job, so a test that fabricates a job
+    without one would be testing a state the service never produces."""
     jid = uuid.uuid4().hex
+    token = api.issue_job_token()
     api._jobs[jid] = {"status": "queued", "progress": "queued", "result": None,
                       "error": None, "created": time.time(), "started": None,
-                      "finished": None, "rows": rows}
-    return jid
+                      "finished": None, "rows": rows, "key_hash": None,
+                      "owner_hash": api._token_hash(token)}
+    return jid, token
 
 
 def test_job_runs_to_a_readable_result(slice_df):
-    jid = _queue(len(slice_df))
+    """The free tier: the state machine runs to completion and the owner reads
+    the verdict. What the two tiers contain is tests/test_tiers.py."""
+    jid, token = _queue(len(slice_df))
     api._work(jid, slice_df, "smiles", "pIC50", None, 3)
 
-    out = api.job_status(jid)
+    out = api.job_status(jid, sub=None, x_job_token=token)
     assert out["status"] == "done"
     assert out["progress"] == "complete"
-    assert set(out["result"]) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
+    assert out["result"]["tier"] == "free"
+    assert out["result"]["inflation_pct"] is not None
     assert out["elapsed"] >= 0
 
 
 def test_job_records_engine_failure_instead_of_raising(slice_df):
     """A bad audit must land as a failed job the poller can read, not as an
     exception that kills the worker silently."""
-    jid = _queue(len(slice_df))
+    jid, token = _queue(len(slice_df))
     api._work(jid, slice_df, "smiles", "no_such_column", None, 3)
 
-    out = api.job_status(jid)
+    out = api.job_status(jid, sub=None, x_job_token=token)
     assert out["status"] == "failed"
     assert "not found" in out["error"]
     assert "result" not in out
@@ -172,7 +184,7 @@ def test_job_records_engine_failure_instead_of_raising(slice_df):
 
 def test_unknown_job_is_404():
     with pytest.raises(HTTPException) as exc:
-        api.job_status("nope")
+        api.job_status("nope", sub=None, x_job_token="")
     assert exc.value.status_code == 404
 
 
@@ -188,7 +200,7 @@ def test_columns_are_checked_before_queueing(slice_df):
 
 def test_finished_jobs_are_reaped(monkeypatch):
     monkeypatch.setattr(api, "JOB_TTL", 0)
-    jid = _queue(100)
+    jid, _ = _queue(100)
     api._jobs[jid].update(status="done", finished=time.time() - 1)
     api._reap(time.time())
     assert jid not in api._jobs

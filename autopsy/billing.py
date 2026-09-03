@@ -12,6 +12,10 @@ are configured outside, through the environment.
                              redirects. Defaults to http://127.0.0.1:8000
     AUTOPSY_DB               SQLite file. Defaults to ./autopsy.db
     AUTOPSY_QUOTA            audits per cycle. Defaults to 20
+    AUTOPSY_PAYWALL_ENABLED  the master switch. Defaults to false — see
+                             `paywall_enabled()`. Everything in this file
+                             works either way; the flag only decides whether
+                             the engine is behind it.
 
 Why SQLite and not the in-process dict the job queue uses: a restart may
 forget a running audit, but it may never forget who paid. One file, one
@@ -48,19 +52,38 @@ PUBLIC_URL = os.getenv("AUTOPSY_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/"
 LIVE_STATUSES = {"active", "trialing"}
 
 
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def paywall_enabled() -> bool:
+    """Is the engine behind the paywall? One flag decides, and it is off.
+
+    Autopsy is a free showcase: an audit runs for anyone, and what it returns
+    is the synthetic verdict — see autopsy/tiers.py. The commercial layer in
+    this file is intact and inert, not deleted, because the business model is
+    a switch and not a rewrite. Set
+
+        AUTOPSY_PAYWALL_ENABLED=true
+
+    and every computing endpoint is behind a subscription again, exactly as
+    it was: same 402, same quota, same Checkout link, same webhook.
+
+    Deliberately *not* the presence of STRIPE_SECRET_KEY. That coupling made
+    the paywall a side effect of configuration — set a key to test a webhook
+    and the engine silently locked. Turning a deployment paid is now one
+    explicit decision, written down in one variable.
+    """
+    return os.getenv("AUTOPSY_PAYWALL_ENABLED", "false").strip().lower() in _TRUE
+
+
 def selling() -> bool:
-    """Is this deployment selling subscriptions?
+    """Can this deployment actually take a payment?
 
-    The paywall follows the Stripe key. A deployment with no STRIPE_SECRET_KEY
-    cannot take a payment, so gating it would only lock its owner out of their
-    own engine — that is the laptop install and the private container, where
-    the audit should just run. Set the key and every /autopsy/ endpoint that
-    computes on data is behind the paywall.
-
-    The consequence to be deliberate about: publishing this on the open
-    internet *without* Stripe configured serves audits to anyone. That is a
-    choice, not an accident — an unconfigured deployment has no way to charge
-    for them either.
+    A paywall in front of a Stripe account that does not exist is a locked
+    door with no handle: `paywall_enabled()` decides whether to charge,
+    this decides whether charging is possible. Both must hold, and when the
+    flag is on without the key `require_subscription` says so rather than
+    quietly serving free audits to a deployment that believes it is paid.
     """
     return bool(os.getenv("STRIPE_SECRET_KEY"))
 
@@ -362,14 +385,28 @@ def require_subscription(authorization: str = Header(default=""),
                          autopsy_key: str = Cookie(default="")):
     """FastAPI dependency guarding every paid endpoint.
 
-    Returns None on a deployment that is not selling — see `selling()` — and
-    the caller then meters nothing. Otherwise a subscriber row, or a refusal.
+    Returns None while the paywall is switched off — the default, and the free
+    showcase — and the caller then meters nothing and gets the free tier.
+    Otherwise a subscriber row, or a refusal.
+
+    This is the payment gate and nothing else. Whether a caller may read a
+    particular audit result is a separate question with a separate answer:
+    api.py::_authorize_job, which stays on in every configuration. A free
+    audit still belongs to whoever launched it.
 
     402 rather than 401 throughout: the caller is not unknown, they are
     unpaid, and the body carries the link that fixes it.
     """
-    if not selling():
+    if not paywall_enabled():
         return None
+    if not selling():
+        # Fail loudly rather than serve free audits from a deployment whose
+        # operator believes it is charging for them.
+        raise HTTPException(
+            status_code=503,
+            detail="this deployment has AUTOPSY_PAYWALL_ENABLED set but no "
+                   "STRIPE_SECRET_KEY, so it can refuse audits but not sell "
+                   "them. Configure Stripe, or unset the flag to run free.")
 
     key = _bearer(authorization) or autopsy_key
     row = by_key(key)

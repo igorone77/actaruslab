@@ -52,16 +52,26 @@ the fact means reissuing invoices.
 
 ## 2. In the deployment
 
-Six environment variables. The three Stripe ones are secrets.
+Seven environment variables. The three Stripe ones are secrets.
+
+**Start with the switch.** Autopsy ships as a free showcase: the paywall is
+off, the engine runs for anyone, and every step below is inert until the flag
+is set. Nothing in this document has any effect without it.
 
 | variable | value | notes |
 |---|---|---|
+| `AUTOPSY_PAYWALL_ENABLED` | `true` | **required.** Default `false` — free showcase. Set it and everything below switches on. |
 | `STRIPE_SECRET_KEY` | `sk_live_…` | secret |
 | `STRIPE_PRICE_ID` | `price_…` | the €199/month recurring price |
 | `STRIPE_WEBHOOK_SECRET` | `whsec_…` | secret |
 | `AUTOPSY_PUBLIC_URL` | `https://autopsy.actaruslab.org` | no trailing slash — Stripe redirects here |
 | `AUTOPSY_DB` | `/data/autopsy.db` | **must be on a persistent volume** |
 | `AUTOPSY_QUOTA` | `20` | optional; this is the default |
+
+> The flag and the key must both be set. `AUTOPSY_PAYWALL_ENABLED=true`
+> without `STRIPE_SECRET_KEY` is refused with a 503 on every audit rather than
+> quietly serving them free — the worst failure here would be a silent one,
+> where the deployment believes it is charging and is not.
 
 > `AUTOPSY_DB` is the one that will bite you. It holds who has paid. On a
 > platform with an ephemeral filesystem — a plain container, most PaaS default
@@ -76,6 +86,10 @@ with those variables set. The container already includes the `stripe` package.
 
 ## 3. Verify, in this order
 
+0. **The switch is on** — with `AUTOPSY_PAYWALL_ENABLED` unset, an upload
+   runs and returns the free tier (`tier: "free"`, an inflation percentage and
+   a contact address). If you see that, the paywall is off and steps 2–5
+   cannot pass.
 1. **Free things still free** — open the site logged out. The BACE-1 demo
    renders. `GET /health` and `GET /autopsy/demo` return 200.
 2. **Paywall bites** — try an upload without subscribing. You get **402** and

@@ -23,6 +23,10 @@ WEBHOOK_SECRET = "whsec_test_secret_for_local_verification"
 def billing(tmp_path, monkeypatch):
     """A fresh database per test, so quota arithmetic cannot leak between."""
     monkeypatch.setenv("AUTOPSY_DB", str(tmp_path / "t.db"))
+    # The paywall is off by default now; these tests are the paywall, so they
+    # switch it on. Everything below is unchanged and must stay green: the
+    # commercial layer is dormant, not gone.
+    monkeypatch.setenv("AUTOPSY_PAYWALL_ENABLED", "true")
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
     monkeypatch.setenv("STRIPE_PRICE_ID", "price_x")
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", WEBHOOK_SECRET)
@@ -195,5 +199,44 @@ def test_billing_endpoints_say_so_when_stripe_is_not_configured(billing, monkeyp
     monkeypatch.delenv("STRIPE_SECRET_KEY")
     with pytest.raises(HTTPException) as e:
         billing.checkout()
+    assert e.value.status_code == 503
+    assert "STRIPE_SECRET_KEY" in e.value.detail
+
+
+# ── the switch ────────────────────────────────────────────────────────
+# Everything above runs with AUTOPSY_PAYWALL_ENABLED=true. These pin what the
+# flag does, in both positions, since it is now the only thing standing
+# between a free showcase and a paid product.
+
+def test_the_paywall_is_off_unless_the_flag_says_otherwise(billing, monkeypatch):
+    """Default off — Stripe fully configured is not consent to charge."""
+    monkeypatch.delenv("AUTOPSY_PAYWALL_ENABLED")
+    assert billing.paywall_enabled() is False
+    assert billing.require_subscription(authorization="", autopsy_key="") is None
+
+
+def test_the_flag_alone_turns_the_paywall_back_on(billing, monkeypatch):
+    """And with it on, an unpaid caller is refused exactly as before."""
+    assert billing.paywall_enabled() is True
+    with pytest.raises(HTTPException) as e:
+        billing.require_subscription(authorization="", autopsy_key="")
+    assert e.value.status_code == 402
+
+
+@pytest.mark.parametrize("value,on", [("true", True), ("TRUE", True), ("1", True),
+                                      ("yes", True), ("on", True),
+                                      ("false", False), ("0", False), ("", False),
+                                      ("maybe", False)])
+def test_the_flag_reads_the_obvious_spellings(billing, monkeypatch, value, on):
+    monkeypatch.setenv("AUTOPSY_PAYWALL_ENABLED", value)
+    assert billing.paywall_enabled() is on
+
+
+def test_a_paywall_with_no_stripe_behind_it_refuses_rather_than_runs_free(billing, monkeypatch):
+    """The worst failure would be silent: an operator who believes they are
+    charging while the engine serves audits for nothing."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    with pytest.raises(HTTPException) as e:
+        billing.require_subscription(authorization="", autopsy_key="")
     assert e.value.status_code == 503
     assert "STRIPE_SECRET_KEY" in e.value.detail

@@ -105,8 +105,24 @@ export default function ModelAutopsyNeutra() {
     return () => { alive = false; };
   }, []);
 
-  const D = result ? fromResult(result, file ? file.name : "uploaded data") : DEMO;
+  // Two shapes come back from the engine and they are not interchangeable.
+  // `reserved` is the whole audit and drives every panel. `free` is the
+  // synthetic verdict — one percentage — and the ladder on screen stays the
+  // BACE-1 benchmark, which the contact panel says in as many words. Painting
+  // a benchmark ladder as if it were the visitor's own data would be the one
+  // dishonest thing this app could do.
+  const full = result && result.tier === "reserved" ? result : null;
+  const free = result && result.tier === "free" ? result : null;
+  const D = full ? fromResult(full, file ? file.name : "uploaded data") : DEMO;
+  const warnings = free ? (free.warnings || []) : (D.warnings || []);
   const busy = status === "running";
+
+  // With a free verdict on screen every other panel is still showing BACE-1.
+  // Marking only the ladder would leave the dials, the readout cards and the
+  // specimen tiles reading as the visitor's own diagnosis, which is precisely
+  // the thing withheld from them. The prefix comes first in the title because
+  // that is where the eye lands before the numbers.
+  const bench = (title) => (free ? `BENCHMARK · ${title}` : title);
 
   const reveal = (rungs) => {
     timers.current.forEach(clearTimeout); timers.current = [];
@@ -121,7 +137,7 @@ export default function ModelAutopsyNeutra() {
     setVerdict(false); setRevealed(0);
     try {
       const data = await runFromFile(file, { smiles: cols.smiles, y: cols.y, date: cols.date || undefined });
-      reveal(data.ladder.filter((r) => r.r2 !== null));
+      reveal(data.tier === "reserved" ? data.ladder.filter((r) => r.r2 !== null) : DEMO.rungs);
     } catch { /* surfaced through `error` below */ }
   };
 
@@ -165,7 +181,8 @@ export default function ModelAutopsyNeutra() {
                 <Dot /> <span style={{ fontFamily: sans, fontWeight: 500, fontSize: 14, color: C.textDim }}>Survival</span>
               </div>
             </div>
-            <Ghost label={result ? "LIVE" : engineUp ? "ENGINE READY" : "BENCHMARK"} on={!!result || engineUp} />
+            <Ghost label={full ? "LIVE" : free ? "VERDICT ONLY" : engineUp ? "ENGINE READY" : "BENCHMARK"}
+                   on={!!result || engineUp} />
             {hasKey && <Ghost label="SUBSCRIBED" on />}
             <Ghost label="SPECIMEN" />
           </div>
@@ -177,14 +194,14 @@ export default function ModelAutopsyNeutra() {
 
         <div className="autopsy-grid">
 
-          <Panel title="CAUSE OF DEATH">
+          <Panel title={bench("CAUSE OF DEATH")}>
             <Dial value={D.lookupPct == null ? "——" : D.lookupPct} unit={D.lookupPct == null ? "" : "%"} caption="OF SCORE IS LOOKUP" sub="reproducible by nearest-neighbour" tone={C.red} big fill={(D.lookupPct ?? 0) / 100} />
             <div style={{ height: 14 }} />
             <Dial value={num(D.survives)} unit="" caption="SURVIVES NEW SERIES" sub="scaffold-disjoint R²" tone={C.amber} fill={(D.survives ?? 0) / 0.78} />
           </Panel>
 
-          <Panel title="POST-MORTEM · DISTANCE FROM THE HONEST SCORE">
-            {(D.warnings || []).map((w, i) => {
+          <Panel title={bench("POST-MORTEM · DISTANCE FROM THE HONEST SCORE")}>
+            {warnings.map((w, i) => {
               const tone = w.level === "severe" ? C.red : C.amber;
               return (
                 <div key={i} style={{ marginBottom: 14, padding: "12px 15px", borderRadius: 8,
@@ -259,7 +276,50 @@ export default function ModelAutopsyNeutra() {
               </div>
             )}
 
-            {verdict && !error && (
+            {free && (
+              <div style={{ marginTop: 14, padding: "16px 18px", borderRadius: 8, background: C.panel,
+                border: `1px solid ${C.edge}`, borderLeft: `2px solid ${C.cyan}` }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+                  <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em",
+                    color: C.cyan }}>VERDETTO SINTETICO</div>
+                  <div style={{ fontFamily: mono, fontSize: 34, fontWeight: 500, lineHeight: 1,
+                    color: free.inflation_state === "clean" ? C.green : C.red }}>
+                    {free.inflation_pct == null ? "——"
+                      : `${free.inflation_pct > 0 ? "+" : ""}${free.inflation_pct}%`}
+                  </div>
+                  {free.inflation_basis && (
+                    <div style={{ fontFamily: sans, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.14em",
+                      color: C.textDim }}>{`VS ${free.inflation_basis.toUpperCase()}`}</div>
+                  )}
+                </div>
+
+                {/* The engine composes this text, percentage already in it, so the
+                    page can never quote a number the audit did not produce. */}
+                {free.contact.message.split("\n\n").map((para, i) => (
+                  <div key={i} style={{ fontFamily: sans, fontSize: i === 0 ? 14.5 : 13.5, lineHeight: 1.6,
+                    color: i === 0 ? C.text : C.textDim, marginTop: i === 0 ? 12 : 9,
+                    maxWidth: 760 }}>{para}</div>
+                ))}
+
+                <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                  <a href={`mailto:${free.contact.email}`} style={{ fontFamily: mono, fontSize: 12,
+                    fontWeight: 600, letterSpacing: "0.08em", padding: "10px 16px", borderRadius: 8,
+                    textDecoration: "none", color: C.bg0,
+                    background: `linear-gradient(180deg, ${C.ice}, ${C.cyan})`,
+                    border: `1px solid ${C.cyan}` }}>{free.contact.email.toUpperCase()}</a>
+                </div>
+
+                <div style={{ fontFamily: sans, fontSize: 11.5, color: C.mut, marginTop: 14,
+                  lineHeight: 1.5, maxWidth: 760 }}>
+                  This percentage is yours. Every other number on this page — the ladder,
+                  the dials, the readout, the specimen tiles — is the BACE-1 benchmark,
+                  published in full so you can see what a complete diagnosis contains.
+                  Your file was audited exactly the same way.
+                </div>
+              </div>
+            )}
+
+            {verdict && !error && !free && (
               <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 8, background: C.panel, border: `1px solid ${C.redDim}`, borderLeft: `2px solid ${C.red}` }}>
                 <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.2em", color: C.red, marginBottom: 8 }}>VERDICT</div>
                 <div style={{ fontFamily: sans, fontSize: 13.5, lineHeight: 1.55, color: C.text }}>
@@ -276,7 +336,7 @@ export default function ModelAutopsyNeutra() {
             )}
           </Panel>
 
-          <Panel title="FORENSIC READOUT">
+          <Panel title={bench("FORENSIC READOUT")}>
             {D.readout.map((c) => {
               const tone = flagColor(c.flag);
               const value = c.value_pct != null ? `${c.value_pct}%` : c.value == null ? "——" : c.value.toFixed(c.signal === "Learned structure" ? 3 : 2);
@@ -288,7 +348,7 @@ export default function ModelAutopsyNeutra() {
         </div>
 
         <div style={{ marginTop: 14 }}>
-          <Panel title="SPECIMEN X-RAY · WHY THE HONEST SPLIT MATTERS">
+          <Panel title={bench("SPECIMEN X-RAY · WHY THE HONEST SPLIT MATTERS")}>
             <div style={{ fontFamily: sans, fontSize: 13, color: C.textDim, marginBottom: 14, maxWidth: 900, lineHeight: 1.55 }}>
               The tell is in the composition: <b style={{ color: C.amber }}>{D.specimen.n_singleton_series} of {D.specimen.n_scaffold_series} scaffold series appear only once</b>. A random split
               scatters near-identical analogues across train and test, so the model grades its own copies — that is where the phantom {num(D.reported)} comes from.

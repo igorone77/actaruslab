@@ -9,13 +9,32 @@ and render the real verdict instead of the precalculated BACE numbers.
 Endpoints
 ---------
 GET  /health                 -> liveness
-POST /autopsy/jobs           -> multipart upload -> 202 {job_id}; the audit runs
-                                off the request. This is the path a hosted
-                                deployment must use.
-GET  /autopsy/jobs/{id}      -> {status, progress, result?, error?}
-POST /autopsy/csv            -> multipart file upload + column names -> full result JSON
-POST /autopsy/records        -> JSON body {records:[{smiles,y,date?}], ...} -> full result JSON
+POST /autopsy/jobs           -> multipart upload -> 202 {job_id, job_token}; the
+                                audit runs off the request. This is the path a
+                                hosted deployment must use.
+GET  /autopsy/jobs/{id}      -> {status, progress, result?, error?}, to the
+                                holder of that job's token
+POST /autopsy/csv            -> multipart file upload + column names -> result JSON
+POST /autopsy/records        -> JSON body {records:[{smiles,y,date?}], ...} -> result JSON
+GET  /autopsy/demo           -> the BACE-1 audit, precomputed, in full
 GET  /                       -> the NEUTRA UI, if web/static has been built
+
+Who gets what
+-------------
+The engine is free: an audit runs for anyone, with no key and no
+subscription. What comes back is decided in autopsy/tiers.py — the free tier
+is the synthetic verdict, one percentage, and the reserved tier is the
+diagnosis behind it. `AUTOPSY_PAYWALL_ENABLED` (default false, see
+billing.paywall_enabled) is the only thing that puts the engine itself behind
+a subscription again.
+
+Two mechanisms that look alike and are not:
+
+    require_subscription   may this caller *run* an audit — the payment gate,
+                           switched off by default
+    _authorize_job         may this caller *read this result* — ownership,
+                           on in every configuration, because a free audit is
+                           still the uploader's data
 
 The two synchronous endpoints run the whole ladder before answering — 19 s
 for 1500 compounds, quadratic in the lookup rung — so they outlive the
@@ -44,6 +63,8 @@ Deployment knobs, all environment variables, all safe by default:
                               get 429. Default 8.
     AUTOPSY_JOB_TTL           seconds a finished job stays readable. Default
                               3600.
+    AUTOPSY_PAYWALL_ENABLED   put the engine behind a subscription again.
+                              Default false. Read by autopsy/billing.py.
 
 Jobs live in this process's memory: they do not survive a restart and are
 not shared between replicas. That is the right trade for a single container
@@ -51,9 +72,12 @@ and the wrong one for a horizontally scaled deployment, which would need
 Redis or a database behind the same two endpoints.
 """
 from __future__ import annotations
+import hashlib
+import hmac
 import io
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -62,12 +86,12 @@ from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
-from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, Header, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import billing
+from . import billing, tiers
 from .billing import QuotaExhausted, require_subscription
 from .engine import run_autopsy, precheck, AutopsyError
 from . import __version__
@@ -147,7 +171,7 @@ async def autopsy_csv(
 ):
     df = _parse_upload(await file.read())
     _precheck(df, smiles, y, date)
-    return _metered(sub, lambda: _run(df, smiles, y, date, k))
+    return tiers.view_for(_metered(sub, lambda: _run(df, smiles, y, date, k)), sub)
 
 
 # ── JSON records path (what the UI can send after in-browser parsing) ─
@@ -170,14 +194,15 @@ def autopsy_records(req: RecordsRequest, sub=Depends(require_subscription)):
     df = pd.DataFrame(rows)
     date_col = "date" if (req.has_date and "date" in df.columns) else None
     _precheck(df, "smiles", "y", date_col)
-    return _metered(sub, lambda: _run(df, "smiles", "y", date_col, req.k))
+    return tiers.view_for(
+        _metered(sub, lambda: _run(df, "smiles", "y", date_col, req.k)), sub)
 
 
 # ── metering ──────────────────────────────────────────────────────────
 def _metered(sub, work):
     """Spend one audit from the cycle, and give it back if the failure was
     ours. A subscriber must never lose one of their 20 to our bug."""
-    if sub is None:                      # not a selling deployment
+    if sub is None:                      # paywall off — the audit is free
         return work()
     try:
         billing.reserve_audit(sub["key_hash"])
@@ -204,8 +229,10 @@ _DEMO = Path(__file__).resolve().parent / "demo_result.json"
 
 @app.get("/autopsy/demo")
 def autopsy_demo():
-    """The BACE-1 audit, precomputed, outside the paywall. It is the showcase:
-    a real result from this engine that anyone can read before paying."""
+    """The BACE-1 audit, precomputed, and the one full result served to
+    anyone. It is the showcase: our dataset, our diagnosis, published in
+    full so that a visitor can see exactly what the reserved tier contains
+    before asking for it on their own data."""
     if not _DEMO.exists():
         raise HTTPException(
             status_code=503,
@@ -240,6 +267,48 @@ def _run(df: pd.DataFrame, smiles: str, y: str, date: Optional[str], k: int):
 _executor = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="autopsy")
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
+
+# One answer for "not yours" and for "never existed". A 403 would confirm
+# that this id belongs to someone, which is already the leak.
+_NO_SUCH_JOB = "unknown job — it expired, or the service restarted"
+
+
+def issue_job_token() -> str:
+    """The claim on a job's result, minted at submit and returned once.
+
+    An audit run without a subscription still has an owner: whoever uploaded
+    the file. This is what makes that true when there is no account to hang
+    ownership on — 256 bits from the OS, held by the browser that submitted,
+    stored here only as a hash. Losing it means the result is unreadable by
+    anybody, which is the correct failure for someone else's data.
+    """
+    return secrets.token_urlsafe(32)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _authorize_job(job: dict, sub, token: str) -> None:
+    """May this caller read this result? Nothing to do with payment.
+
+    The free tier makes an audit cheap, not public. Two ways to own a job,
+    checked in every configuration including the free one:
+
+      · the one-time token from the submit response — an anonymous audit;
+      · the subscription key that submitted it, when the paywall is on.
+
+    A job with neither recorded is owned by nobody and readable by nobody.
+    That is the safe direction to fail: an entry point that forgets to set an
+    owner locks its own results instead of publishing everyone else's.
+    """
+    if (sub is not None and job.get("key_hash")
+            and hmac.compare_digest(job["key_hash"], sub["key_hash"])):
+        return
+    if (token and job.get("owner_hash")
+            and hmac.compare_digest(job["owner_hash"], _token_hash(token))):
+        return
+    raise HTTPException(status_code=404, detail=_NO_SUCH_JOB)
 
 
 def _reap(now: float) -> None:
@@ -298,7 +367,11 @@ async def submit_job(
     sub=Depends(require_subscription),
 ):
     """Validate now, audit later. Bad columns and oversized data still fail
-    immediately with 4xx; only the slow part is deferred."""
+    immediately with 4xx; only the slow part is deferred.
+
+    The response carries `job_token` once. It is the only claim on the result
+    and it is not recoverable — this process keeps a hash of it, exactly as
+    billing keeps a hash of an API key."""
     df = _parse_upload(await file.read())
     _check_size(df)
     _precheck(df, smiles, y, date)
@@ -312,16 +385,19 @@ async def submit_job(
                 detail=f"{QUEUE_DEPTH} audits already queued. Each one saturates a "
                        f"CPU for tens of seconds; try again shortly.")
         job_id = uuid.uuid4().hex
+        token = issue_job_token()
         _jobs[job_id] = {"status": "queued", "progress": "queued", "result": None,
                          "error": None, "created": now, "started": None,
                          "finished": None, "rows": int(len(df)),
-                         "key_hash": sub["key_hash"] if sub else None}
+                         "key_hash": sub["key_hash"] if sub else None,
+                         "owner_hash": _token_hash(token)}
 
     # Spent here rather than on completion: a queued audit already holds a
     # worker, and refunded below if the failure turns out to be ours.
-    if sub is None:                      # not a selling deployment
+    if sub is None:                      # paywall off — the audit is free
         _executor.submit(_work, job_id, df, smiles, y, date, k)
-        return {"job_id": job_id, "status": "queued", "rows": int(len(df))}
+        return {"job_id": job_id, "job_token": token, "status": "queued",
+                "rows": int(len(df))}
     try:
         used = billing.reserve_audit(sub["key_hash"])
     except QuotaExhausted:
@@ -334,33 +410,35 @@ async def submit_job(
             headers={"X-Checkout-URL": billing.checkout_url()})
 
     _executor.submit(_work, job_id, df, smiles, y, date, k)
-    return {"job_id": job_id, "status": "queued", "rows": int(len(df)),
+    return {"job_id": job_id, "job_token": token, "status": "queued",
+            "rows": int(len(df)),
             "audits_used": used,
             "audits_per_cycle": billing.QUOTA}
 
 
 @app.get("/autopsy/jobs/{job_id}")
-def job_status(job_id: str, sub=Depends(require_subscription)):
-    """An audit result is the subscriber's data, so only the key that
-    submitted the job can read it. Job ids are unguessable, but that is not a
-    reason to serve one to whoever asks."""
+def job_status(job_id: str, sub=Depends(require_subscription),
+               x_job_token: str = Header(default="")):
+    """An audit result is the uploader's data, so only whoever submitted it
+    can read it — free audit or paid one, the check is the same and it is
+    always on. Job ids are unguessable, but that is not a reason to serve one
+    to whoever asks.
+
+    The token travels in a header rather than the path so that it stays out
+    of access logs, browser history and referrers, which the job id does not.
+    """
     with _lock:
         job = _jobs.get(job_id)
         if job is None:
-            raise HTTPException(
-                status_code=404,
-                detail="unknown job — it expired, or the service restarted")
-        if sub is not None and job.get("key_hash") and job["key_hash"] != sub["key_hash"]:
-            # Same answer as a job that does not exist: confirming it is
-            # someone else's would leak that it exists at all.
-            raise HTTPException(
-                status_code=404,
-                detail="unknown job — it expired, or the service restarted")
+            raise HTTPException(status_code=404, detail=_NO_SUCH_JOB)
+        _authorize_job(job, sub, x_job_token)
         out = {"job_id": job_id, "status": job["status"], "progress": job["progress"],
                "rows": job["rows"],
                "elapsed": round((job["finished"] or time.time()) - job["created"], 1)}
         if job["status"] == "done":
-            out["result"] = job["result"]
+            # The full audit stays in this dict; what leaves is the caller's
+            # tier of it, built key by key in tiers.public_view.
+            out["result"] = tiers.view_for(job["result"], sub)
         elif job["status"] == "failed":
             out["error"] = job["error"]
         return out

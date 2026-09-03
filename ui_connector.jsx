@@ -61,8 +61,20 @@ export async function engineReachable() {
 }
 
 // ── the hook the UI uses ─────────────────────────────────────────────
-// Returns { result, status, error, progress, runFromFile, runFromRecords }.
-// `result` matches the engine's AutopsyResult: {specimen, ladder, verdict, readout, meta}.
+// Returns { result, status, error, progress, paywall, runFromFile, runFromRecords }.
+//
+// `result.tier` says which of two shapes came back, and the UI must read it
+// before anything else:
+//
+//   "free"      { tier, inflation_pct, inflation_basis, inflation_state,
+//                 warnings, contact:{email, message, withheld} }
+//               The synthetic verdict. The audit ran in full — the diagnosis
+//               simply never left the server, so there is nothing here to
+//               dig for.
+//   "reserved"  { tier, specimen, ladder, verdict, readout, warnings, meta }
+//               The whole audit, to a live subscription.
+//
+// Free is the default and the deployed configuration; see autopsy/tiers.py.
 export function useAutopsy() {
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("idle");   // idle | running | done | error
@@ -100,16 +112,23 @@ export function useAutopsy() {
         method: "POST", body: form, headers: auth(),
       });
       if (!res.ok) await fail(res);
-      const { job_id } = await res.json();
+      // `job_token` is the claim on this result and is returned once. It is
+      // kept in this closure and nowhere else: not in localStorage, not in
+      // the URL. A reload loses the audit, which is the correct trade for
+      // data that is not ours to leave lying around.
+      const { job_id, job_token } = await res.json();
+      const claim = job_token ? { "X-Job-Token": job_token } : {};
 
       for (;;) {
         await new Promise((r) => setTimeout(r, POLL_MS));
-        const poll = await fetch(`${API_BASE}/autopsy/jobs/${job_id}`, { headers: auth() });
+        const poll = await fetch(`${API_BASE}/autopsy/jobs/${job_id}`,
+                                 { headers: { ...auth(), ...claim } });
         if (!poll.ok) await fail(poll);
         const job = await poll.json();
         setProgress(job.progress || job.status);
         if (job.status === "done") {
-          setResult(job.result); setStatus("done"); setProgress(null);
+          setResult(job.result); setPaywall(null);
+          setStatus("done"); setProgress(null);
           return job.result;
         }
         if (job.status === "failed") throw new Error(job.error);
@@ -134,7 +153,7 @@ export function useAutopsy() {
         throw new Error(detail.detail || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      setResult(data); setStatus("done");
+      setResult(data); setPaywall(null); setStatus("done");
       return data;
     } catch (e) {
       setError(e.message); setStatus("error"); throw e;
@@ -218,9 +237,11 @@ export function AutopsyUploader() {
       }} />
       {status === "running" && <span>● running autopsy…</span>}
       {status === "error" && <span>error: {error}</span>}
-      {status === "done" && result && (
+      {status === "done" && result && (result.tier === "reserved" ? (
         <span>reported {result.verdict.reported} · {result.verdict.lookup_pct_of_reported}% lookup</span>
-      )}
+      ) : (
+        <span>inflation +{result.inflation_pct}% · {result.contact.email}</span>
+      ))}
     </div>
   );
 }

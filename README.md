@@ -35,26 +35,62 @@ The headline numbers it extracts:
 Nothing is model magic: RDKit + scikit-learn + XGBoost do the numbers. The
 engine only decides how to *validate*, and reports what it finds.
 
-### Subscription
+### What an audit gives back
 
-€199/month, 20 audits per billing cycle, blocked until renewal past that.
-`/health` and `GET /autopsy/demo` — the precomputed BACE-1 audit — stay free;
-everything under `/autopsy/` that computes on your data is behind the paywall
-and answers **402** with the checkout link when it is not paid.
+**The engine is free.** Anyone can upload a dataset and run the full ladder —
+no key, no account, no subscription. What comes back is split in two, and the
+split is the product:
 
-**The paywall follows the Stripe key.** A deployment with no
-`STRIPE_SECRET_KEY` cannot take a payment, so it does not gate: the laptop
-install and the private container keep working exactly as before. Set the key
-and the paywall activates. The corollary to be deliberate about — publishing
-this on the open internet *without* Stripe configured serves audits to
-everyone, which is a choice rather than an accident, since such a deployment
-has no way to charge for them either.
+| | free — everyone | reserved — on request |
+|---|---|---|
+| the verdict | **inflation `+X%`**: how far the reported score sits above what survives an honest split | |
+| the diagnosis | | where the leakage originates, which scaffold series carry it, the per-fold breakdown, the reproducible validation report, what to change |
+
+The audit runs whole either way. The reserved half is simply never
+serialised: `autopsy/tiers.py::public_view` builds the free response key by
+key rather than filtering the full one, so there is nothing in the payload to
+inspect, decode or reconstruct — and a field added to the engine tomorrow
+cannot leak through it by default. `GET /autopsy/demo` is the exception on
+purpose: the BACE-1 audit is published in full, so a visitor can see exactly
+what the reserved tier contains before asking for it on their own data.
+
+Free does not mean public. A result belongs to whoever submitted it: the job
+submit returns a `job_token` once, held only by the browser that ran the
+audit, and polling without it answers **404** — the same answer as a job that
+never existed, because a 403 would confirm the id belongs to someone. That
+check runs in every configuration and is not connected to billing.
+
+Ask for the full diagnosis at **actaruslab@proton.me**.
+
+### Subscription — present, switched off
+
+€199/month, 20 audits per billing cycle, blocked until renewal past that. All
+of it is in the repository and none of it runs: Checkout, the
+signature-verified webhook, key issuance, the quota counter, the customer
+portal, the 402. One flag decides.
+
+```bash
+AUTOPSY_PAYWALL_ENABLED=false   # default — free showcase, no 402, no checkout link
+AUTOPSY_PAYWALL_ENABLED=true    # the paid product, exactly as it was
+```
+
+With it on, everything under `/autopsy/` that computes on your data is behind
+the paywall again and answers **402** with the checkout link; a live
+subscription buys the reserved tier. `/health` and `GET /autopsy/demo` stay
+free in both positions.
+
+The flag, and not the presence of `STRIPE_SECRET_KEY`, is what decides. That
+coupling made the paywall a side effect of configuration — set a key to test a
+webhook and the engine silently locked. Turning a deployment paid is now one
+explicit decision in one variable. Setting the flag *without* a Stripe key is
+refused with a 503 rather than served free, so a deployment cannot believe it
+is charging while it is not.
 
 Stripe Checkout takes the payment, a signature-verified webhook grants access,
 and the Stripe customer portal handles cancellation. A subscription issues one
 API key, shown once and stored only as a SHA-256 hash, presented as
-`Authorization: Bearer ma_…` or the `autopsy_key` cookie. Audit results are
-readable only by the key that submitted them.
+`Authorization: Bearer ma_…` or the `autopsy_key` cookie. With the paywall on,
+that key is the second way to own a job result, alongside the `job_token`.
 
 Subscriber records live in SQLite (`AUTOPSY_DB`) rather than in memory: a
 restart may forget a running audit, but it may never forget who paid. **Point
@@ -285,6 +321,7 @@ rather than a code edit:
 | `AUTOPSY_WORKERS` | `1` | audits running at once; each saturates a CPU |
 | `AUTOPSY_QUEUE_DEPTH` | `8` | jobs allowed to wait; beyond it, submits get 429 |
 | `AUTOPSY_JOB_TTL` | `3600` | seconds a finished job stays readable |
+| `AUTOPSY_PAYWALL_ENABLED` | `false` | the master switch. `false` is the free showcase; `true` restores the €199/month paywall in full. Requires `STRIPE_SECRET_KEY`, or the service answers 503 rather than serving free audits from a deployment that believes it is charging. |
 
 **The audit runs off the request.** It has to: measured here, 1513 compounds
 take 19.2 s, and the lookup rung is O(n²), so 3000 compounds is roughly four

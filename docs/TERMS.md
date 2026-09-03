@@ -7,6 +7,14 @@ particularly the sections marked **[LEGAL REVIEW]**, which turn on facts only
 you know: where ActarusLab is established, whether you sell to businesses
 only, and how you handle EU VAT.
 
+**Scope: this document covers the €199/month subscription, which is currently
+switched off** (`AUTOPSY_PAYWALL_ENABLED=false`). The deployed service is a
+free showcase: it runs an audit for anyone and returns the synthetic verdict
+only. Nothing below describes that free tier — it has no fee, no quota and no
+account — and terms for it still need to be written and reviewed. **[LEGAL
+REVIEW: the free tier needs its own liability, data-retention and
+acceptable-use clauses before the site goes live.]**
+
 Last updated: _[date]_ · Provider: _[legal entity, address, VAT number]_
 
 ---
