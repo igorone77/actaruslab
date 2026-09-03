@@ -41,3 +41,47 @@ jobs:
             sleep 1
           done
           curl -sf http://127.0.0.1:8000/health | grep -q '"status":"ok"'
+
+      # The tier split over real HTTP, with FastAPI resolving the dependency
+      # for itself. The unit tests hand `sub` to the endpoints directly, so
+      # they cannot catch a paywall dependency that stops returning None or a
+      # view that leaks once the response is actually serialised. This is the
+      # deployed configuration — no key, no flag — asserted end to end.
+      - name: Free tier — an audit runs with no key and returns the verdict only
+        run: |
+          head -n 201 tests/data/alogp_500.csv > /tmp/smoke.csv
+          SUBMIT=$(curl -sf -X POST http://127.0.0.1:8000/autopsy/jobs \
+            -F "file=@/tmp/smoke.csv" -F "smiles=smiles" -F "y=AlogP" -F "k=3")
+          echo "$SUBMIT"
+          JID=$(python -c "import json,sys;print(json.loads(sys.argv[1])['job_id'])" "$SUBMIT")
+          TOK=$(python -c "import json,sys;print(json.loads(sys.argv[1])['job_token'])" "$SUBMIT")
+
+          # someone without the token gets the same answer as for a job that
+          # never existed, paywall or no paywall
+          test "$(curl -s -o /dev/null -w '%{http_code}' \
+            http://127.0.0.1:8000/autopsy/jobs/$JID)" = "404"
+
+          for _ in $(seq 1 90); do
+            OUT=$(curl -sf -H "X-Job-Token: $TOK" http://127.0.0.1:8000/autopsy/jobs/$JID)
+            echo "$OUT" | grep -q '"status":"done"' && break
+            echo "$OUT" | grep -q '"status":"failed"' && { echo "$OUT"; exit 1; }
+            sleep 2
+          done
+          echo "$OUT"
+          python - "$OUT" <<'PY'
+          import json, sys
+          job = json.loads(sys.argv[1])
+          assert job["status"] == "done", job
+          res = job["result"]
+          assert res["tier"] == "free", res
+          assert isinstance(res["inflation_pct"], int), res
+          assert set(res) == {"tier", "inflation_pct", "inflation_basis",
+                              "inflation_state", "warnings", "contact"}, sorted(res)
+          raw = json.dumps(job)
+          for leaked in ("ladder", "readout", "specimen", "headline",
+                         "lookup_pct_of_reported", "permutation_floor"):
+              assert leaked not in raw, f"{leaked} reached the free response"
+          assert "actaruslab@proton.me" in res["contact"]["message"]
+          assert f"+{res['inflation_pct']}%" in res["contact"]["message"]
+          print("free tier ok:", res["inflation_pct"], "%", res["inflation_basis"])
+          PY
