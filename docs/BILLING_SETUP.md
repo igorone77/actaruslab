@@ -87,9 +87,11 @@ with those variables set. The container already includes the `stripe` package.
 ## 3. Verify, in this order
 
 0. **The switch is on** — with `AUTOPSY_PAYWALL_ENABLED` unset, an upload
-   runs and returns the free tier (`tier: "free"`, an inflation percentage and
-   a contact address). If you see that, the paywall is off and steps 2–5
-   cannot pass.
+   runs and returns a result (`tier: "full"` by default, or `tier: "verdict"`
+   where `AUTOPSY_VERDICT_ONLY` is set). Either way the audit ran without
+   payment, so the paywall is off and steps 2–5 cannot pass. Note that
+   `AUTOPSY_VERDICT_ONLY` is a separate switch and does not paywall anything:
+   it decides what a free audit says, not whether one may run.
 1. **Free things still free** — open the site logged out. The BACE-1 demo
    renders. `GET /health` and `GET /autopsy/demo` return 200.
 2. **Paywall bites** — try an upload without subscribing. You get **402** and

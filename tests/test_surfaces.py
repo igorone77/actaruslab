@@ -77,7 +77,7 @@ def test_api_records_returns_full_result(slice_df, subscriber):
     out = autopsy_records(req, subscriber)
     assert set(out) == {"tier", "specimen", "ladder", "verdict", "readout",
                         "warnings", "meta"}
-    assert out["tier"] == "reserved"
+    assert out["tier"] == "full"
     assert out["specimen"]["n_compounds"] == 300
     assert out["verdict"]["reported"] is not None
 
@@ -152,21 +152,22 @@ def _queue(rows: int):
     api._jobs[jid] = {"status": "queued", "progress": "queued", "result": None,
                       "error": None, "created": time.time(), "started": None,
                       "finished": None, "rows": rows, "key_hash": None,
-                      "owner_hash": api._token_hash(token)}
+                      "owner_hash": api._token_hash(token), "session_hash": None}
     return jid, token
 
 
 def test_job_runs_to_a_readable_result(slice_df):
-    """The free tier: the state machine runs to completion and the owner reads
-    the verdict. What the two tiers contain is tests/test_tiers.py."""
+    """The state machine runs to completion and the owner reads the result.
+    Which tier that result is, and what each contains, is tests/test_tiers.py
+    and tests/test_job_lifecycle.py."""
     jid, token = _queue(len(slice_df))
     api._work(jid, slice_df, "smiles", "pIC50", None, 3)
 
-    out = api.job_status(jid, sub=None, x_job_token=token)
+    out = api.job_status(jid, sub=None, x_job_token=token, autopsy_session="")
     assert out["status"] == "done"
     assert out["progress"] == "complete"
-    assert out["result"]["tier"] == "free"
-    assert out["result"]["inflation_pct"] is not None
+    assert out["result"]["tier"] == "full"
+    assert out["result"]["verdict"]["reported"] is not None
     assert out["elapsed"] >= 0
 
 
@@ -176,7 +177,7 @@ def test_job_records_engine_failure_instead_of_raising(slice_df):
     jid, token = _queue(len(slice_df))
     api._work(jid, slice_df, "smiles", "no_such_column", None, 3)
 
-    out = api.job_status(jid, sub=None, x_job_token=token)
+    out = api.job_status(jid, sub=None, x_job_token=token, autopsy_session="")
     assert out["status"] == "failed"
     assert "not found" in out["error"]
     assert "result" not in out
@@ -184,7 +185,7 @@ def test_job_records_engine_failure_instead_of_raising(slice_df):
 
 def test_unknown_job_is_404():
     with pytest.raises(HTTPException) as exc:
-        api.job_status("nope", sub=None, x_job_token="")
+        api.job_status("nope", sub=None, x_job_token="", autopsy_session="")
     assert exc.value.status_code == 404
 
 

@@ -6,29 +6,74 @@ of it leaves the process, and it is the only place that decision is made.
 
 Two tiers
 ---------
-free       the synthetic verdict: how much the reported score is inflated over
-           the honest one, as a single percentage, plus an invitation to ask
-           for the rest. Nothing else.
-reserved   the audit as the engine built it — the ladder, the per-fold
+full       the audit as the engine built it — the ladder, the per-fold
            metrics, the scaffold composition, the readout cards, the
            reproducible validation report. Where the leakage comes from, not
-           just that it is there.
+           just that it is there. **This is the default.**
+verdict    the synthetic verdict alone: how much the reported score is
+           inflated over the honest one, as a single percentage, plus an
+           invitation to ask for the rest.
 
-`public_view` builds the free tier from scratch. That is deliberate and it is
-the whole security argument: a whitelist that copies four values out of the
+Two switches, and they are not the same switch
+----------------------------------------------
+    AUTOPSY_PAYWALL_ENABLED   may an audit run at all without paying.
+                              Default false — see billing.paywall_enabled.
+    AUTOPSY_VERDICT_ONLY      what an audit hands back to someone who is not
+                              a subscriber. Default false: everything.
+
+They were one switch, and that was a design mistake worth naming here so it
+is not repeated. "Turn the paywall off" plainly reads as "give people the
+product", but the flag only stopped the 402 and left the output withheld, so
+a deployment with the paywall visibly off still served a percentage and
+nothing else. One flag was answering two questions. Now each question has its
+own, and either can be set without touching the other:
+
+    (default)                      free, and the whole diagnosis
+    AUTOPSY_VERDICT_ONLY=true      free to run, percentage only — the
+                                   lead-generating showcase
+    AUTOPSY_PAYWALL_ENABLED=true   the paid product: 402 without a
+                                   subscription, whole diagnosis with one
+
+A live subscription always reads the full audit, whatever AUTOPSY_VERDICT_ONLY
+says: it is what was paid for.
+
+`public_view` builds the verdict tier from scratch. That is deliberate and it
+is the whole security argument: a whitelist that copies four values out of the
 result cannot leak a fifth, whereas a filter that pops keys off the full dict
 leaks the day someone adds a field to the engine and forgets this file exists.
 The withheld part is never serialised at all — it is not hidden inside the
 response under another name, not truncated, not encoded. There is nothing in
-the JSON to inspect, because it was never put there.
+the JSON to inspect, because it was never put there. That property is intact
+and one variable away; it is switched off, not removed.
 
-Which tier a caller gets is decided in api.py, by whether they hold a live
-subscription. The CLI is not affected: it runs the engine locally on a file
+The CLI is not affected by any of this: it runs the engine locally on a file
 the operator already has, and prints everything.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
+
+# Same spellings the paywall flag accepts, so the two read alike in a deploy
+# config and neither surprises someone who has met the other.
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def verdict_only() -> bool:
+    """Is the diagnosis withheld from callers without a subscription?
+
+    Default false: an audit returns everything it found. Set
+
+        AUTOPSY_VERDICT_ONLY=true
+
+    to serve the synthetic verdict alone and invite the reader to write in —
+    the lead-generating showcase.
+
+    Read from the environment on every call, not bound at import, so a
+    deployment's setting cannot be shadowed by whatever happened to be set
+    when this module was first loaded.
+    """
+    return os.getenv("AUTOPSY_VERDICT_ONLY", "false").strip().lower() in _TRUE
 
 CONTACT_EMAIL = "actaruslab@proton.me"
 
@@ -117,7 +162,7 @@ def contact_message(inf: dict) -> str:
 
 
 def public_view(result: dict) -> dict:
-    """The free tier, built by hand from the full audit.
+    """The verdict tier, built by hand from the full audit.
 
     Every key in the returned dict is written out below. Adding a rung, a
     metric or a specimen field to the engine cannot widen this: it has to be
@@ -131,7 +176,7 @@ def public_view(result: dict) -> dict:
     """
     inf = inflation(result.get("verdict") or {})
     return {
-        "tier": "free",
+        "tier": "verdict",
         "inflation_pct": inf["pct"],
         "inflation_basis": inf["basis"],
         "inflation_state": inf["state"],
@@ -144,9 +189,14 @@ def public_view(result: dict) -> dict:
     }
 
 
-def reserved_view(result: dict) -> dict:
+def full_view(result: dict) -> dict:
     """The audit as the engine built it, marked with the tier it came from."""
-    return {"tier": "reserved", **result}
+    return {"tier": "full", **result}
+
+
+# The name this used to have, kept because it reads well at the call site and
+# because renaming a function is not a reason to break anything importing it.
+reserved_view = full_view
 
 
 def _is_subscriber(subscriber) -> bool:
@@ -167,9 +217,18 @@ def _is_subscriber(subscriber) -> bool:
 
 
 def view_for(result: Optional[dict], subscriber) -> Optional[dict]:
-    """Which tier this caller gets. A live subscription buys the diagnosis;
-    everything else — anonymous, free, paywall switched off — gets the
-    verdict and the address to write to."""
+    """Which tier this caller gets.
+
+    A live subscription always reads the whole audit — that is what it bought,
+    and no deployment setting takes it away. Everyone else reads the whole
+    audit too, unless this deployment has asked to withhold it.
+
+    Note which switch is *not* consulted here: the paywall decides whether an
+    audit may run, not what it says once it has. Keeping the two apart is the
+    entire point of AUTOPSY_VERDICT_ONLY existing separately.
+    """
     if result is None:
         return None
-    return reserved_view(result) if _is_subscriber(subscriber) else public_view(result)
+    if _is_subscriber(subscriber):
+        return full_view(result)
+    return public_view(result) if verdict_only() else full_view(result)

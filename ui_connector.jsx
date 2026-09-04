@@ -63,18 +63,20 @@ export async function engineReachable() {
 // ── the hook the UI uses ─────────────────────────────────────────────
 // Returns { result, status, error, progress, paywall, runFromFile, runFromRecords }.
 //
-// `result.tier` says which of two shapes came back, and the UI must read it
-// before anything else:
+// Two shapes come back, and the UI must tell them apart before anything else.
+// Branch on whether `ladder` is there, not on the `tier` string: the shape is
+// the fact, the name is only a promise about it.
 //
-//   "free"      { tier, inflation_pct, inflation_basis, inflation_state,
-//                 warnings, contact:{email, message, withheld} }
-//               The synthetic verdict. The audit ran in full — the diagnosis
-//               simply never left the server, so there is nothing here to
-//               dig for.
-//   "reserved"  { tier, specimen, ladder, verdict, readout, warnings, meta }
-//               The whole audit, to a live subscription.
+//   "full"     { tier, specimen, ladder, verdict, readout, warnings, meta }
+//              The whole audit. This is the default — an audit returns what
+//              it found.
+//   "verdict"  { tier, inflation_pct, inflation_basis, inflation_state,
+//              warnings, contact:{email, message, withheld} }
+//              The synthetic verdict alone, on a deployment that sets
+//              AUTOPSY_VERDICT_ONLY. The audit still ran in full; the
+//              diagnosis simply never left the server.
 //
-// Free is the default and the deployed configuration; see autopsy/tiers.py.
+// See autopsy/tiers.py for which switch decides which.
 export function useAutopsy() {
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState("idle");   // idle | running | done | error
@@ -237,7 +239,7 @@ export function AutopsyUploader() {
       }} />
       {status === "running" && <span>● running autopsy…</span>}
       {status === "error" && <span>error: {error}</span>}
-      {status === "done" && result && (result.tier === "reserved" ? (
+      {status === "done" && result && (Array.isArray(result.ladder) ? (
         <span>reported {result.verdict.reported} · {result.verdict.lookup_pct_of_reported}% lookup</span>
       ) : (
         <span>inflation +{result.inflation_pct}% · {result.contact.email}</span>

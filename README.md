@@ -37,22 +37,46 @@ engine only decides how to *validate*, and reports what it finds.
 
 ### What an audit gives back
 
-**The engine is free.** Anyone can upload a dataset and run the full ladder —
-no key, no account, no subscription. What comes back is split in two, and the
-split is the product:
+**The engine is free and, by default, so is everything it finds.** Anyone can
+upload a dataset, run the full ladder, and read the whole diagnosis back — no
+key, no account, no subscription. That is the default configuration and it
+needs no environment variables at all.
 
-| | free — everyone | reserved — on request |
+Two switches change it, and they answer different questions. Keeping them
+apart matters: "turn the paywall off" reads as "give people the product", so a
+single flag doing both jobs left deployments visibly unpaywalled and still
+withholding, with nothing to point at.
+
+| | `AUTOPSY_PAYWALL_ENABLED` | `AUTOPSY_VERDICT_ONLY` |
 |---|---|---|
-| the verdict | **inflation `+X%`**: how far the reported score sits above what survives an honest split | |
-| the diagnosis | | where the leakage originates, which scaffold series carry it, the per-fold breakdown, the reproducible validation report, what to change |
+| question | may an audit run without paying? | what does an audit hand back? |
+| default | `false` — it runs | `false` — everything it found |
+| set to `true` | **402** without a subscription | the inflation `+X%` alone |
 
-The audit runs whole either way. The reserved half is simply never
-serialised: `autopsy/tiers.py::public_view` builds the free response key by
-key rather than filtering the full one, so there is nothing in the payload to
-inspect, decode or reconstruct — and a field added to the engine tomorrow
-cannot leak through it by default. `GET /autopsy/demo` is the exception on
-purpose: the BACE-1 audit is published in full, so a visitor can see exactly
-what the reserved tier contains before asking for it on their own data.
+```bash
+# nothing set — free, and the whole diagnosis
+uvicorn autopsy.api:app
+
+# the lead-generating showcase: free to run, verdict only
+AUTOPSY_VERDICT_ONLY=true uvicorn autopsy.api:app
+
+# the paid product
+AUTOPSY_PAYWALL_ENABLED=true STRIPE_SECRET_KEY=sk_… uvicorn autopsy.api:app
+```
+
+A live subscription always reads the full audit, whatever `AUTOPSY_VERDICT_ONLY`
+says — it is what was paid for.
+
+**What withholding withholds.** With `AUTOPSY_VERDICT_ONLY=true` the response
+carries the inflation percentage and an address to write to; where the leakage
+originates, which scaffold series carry it, the per-fold breakdown and the
+validation report do not travel. The audit still runs whole — the withheld
+half is simply never serialised. `autopsy/tiers.py::public_view` builds that
+response key by key rather than filtering the full one, so there is nothing in
+the payload to inspect, decode or reconstruct, and a field added to the engine
+tomorrow cannot leak through it. `GET /autopsy/demo` stays whole in every
+configuration: the BACE-1 audit is published in full so a visitor can see what
+a complete diagnosis contains.
 
 Free does not mean public. A result belongs to whoever submitted it, and the
 submit hands back two claims on it: a `job_token` in the response body, for
@@ -70,7 +94,8 @@ was told its live job had expired. It does not widen who can read a result —
 HttpOnly, SameSite, and Secure wherever `AUTOPSY_PUBLIC_URL` is https — only
 which of that browser's own audits it can read.
 
-Ask for the full diagnosis at **actaruslab@proton.me**.
+Where a deployment withholds, it says so and gives an address:
+**actaruslab@proton.me**.
 
 ### Subscription — present, switched off
 
@@ -80,14 +105,15 @@ signature-verified webhook, key issuance, the quota counter, the customer
 portal, the 402. One flag decides.
 
 ```bash
-AUTOPSY_PAYWALL_ENABLED=false   # default — free showcase, no 402, no checkout link
+AUTOPSY_PAYWALL_ENABLED=false   # default — the audit runs, no 402, no checkout link
 AUTOPSY_PAYWALL_ENABLED=true    # the paid product, exactly as it was
 ```
 
 With it on, everything under `/autopsy/` that computes on your data is behind
 the paywall again and answers **402** with the checkout link; a live
-subscription buys the reserved tier. `/health` and `GET /autopsy/demo` stay
-free in both positions.
+subscription buys the full audit. `/health` and `GET /autopsy/demo` stay free
+in both positions. It does not decide what a successful audit returns — that
+is `AUTOPSY_VERDICT_ONLY`, above.
 
 The flag, and not the presence of `STRIPE_SECRET_KEY`, is what decides. That
 coupling made the paywall a side effect of configuration — set a key to test a
@@ -332,7 +358,8 @@ rather than a code edit:
 | `AUTOPSY_WORKERS` | `1` | audits running at once; each saturates a CPU |
 | `AUTOPSY_QUEUE_DEPTH` | `8` | jobs allowed to wait; beyond it, submits get 429 |
 | `AUTOPSY_JOB_TTL` | `3600` | seconds a finished job stays readable |
-| `AUTOPSY_PAYWALL_ENABLED` | `false` | the master switch. `false` is the free showcase; `true` restores the €199/month paywall in full. Requires `STRIPE_SECRET_KEY`, or the service answers 503 rather than serving free audits from a deployment that believes it is charging. |
+| `AUTOPSY_PAYWALL_ENABLED` | `false` | may an audit run without paying. `true` restores the €199/month paywall in full, and then requires `STRIPE_SECRET_KEY`, or the service answers 503 rather than serving free audits from a deployment that believes it is charging. |
+| `AUTOPSY_VERDICT_ONLY` | `false` | what an audit hands back to someone without a subscription. `false` is the whole diagnosis; `true` is the inflation percentage and an address to write to. Independent of the paywall flag. |
 
 **The audit runs off the request.** It has to: measured here, 1513 compounds
 take 19.2 s, and the lookup rung is O(n²), so 3000 compounds is roughly four

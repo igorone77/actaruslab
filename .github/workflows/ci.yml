@@ -49,8 +49,8 @@ jobs:
       # for itself. The unit tests hand `sub` to the endpoints directly, so
       # they cannot catch a paywall dependency that stops returning None or a
       # view that leaks once the response is actually serialised. This is the
-      # deployed configuration — no key, no flag — asserted end to end.
-      - name: Free tier — an audit runs with no key and returns the verdict only
+      # default configuration — no key, no flags — asserted end to end.
+      - name: Default — an audit runs with no key and returns the whole diagnosis
         run: |
           head -n 201 tests/data/alogp_500.csv > /tmp/smoke.csv
           SUBMIT=$(curl -sf -X POST http://127.0.0.1:8000/autopsy/jobs \
@@ -76,15 +76,53 @@ jobs:
           job = json.loads(sys.argv[1])
           assert job["status"] == "done", job
           res = job["result"]
-          assert res["tier"] == "free", res
+          assert res["tier"] == "full", res
+          assert set(res) == {"tier", "specimen", "ladder", "verdict",
+                              "readout", "warnings", "meta"}, sorted(res)
+          assert res["specimen"]["n_compounds"] == 200, res["specimen"]
+          assert {r["kind"] for r in res["ladder"]} >= {"reported", "lookup", "floor"}
+          assert res["verdict"]["headline"]
+          print("full diagnosis ok:", len(res["ladder"]), "rungs,",
+                res["verdict"]["reported"], "reported")
+          PY
+
+      # And the showcase configuration, which is the same engine withholding
+      # its findings. Both positions run in CI because the pair of them is the
+      # business model, and either one silently flipping is the bug.
+      - name: Verdict-only — the same audit, diagnosis withheld
+        env:
+          AUTOPSY_VERDICT_ONLY: "true"
+        run: |
+          uvicorn autopsy.api:app --host 127.0.0.1 --port 8001 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8001/health && break
+            sleep 1
+          done
+          SUBMIT=$(curl -sf -X POST http://127.0.0.1:8001/autopsy/jobs \
+            -F "file=@/tmp/smoke.csv" -F "smiles=smiles" -F "y=AlogP" -F "k=3")
+          JID=$(python -c "import json,sys;print(json.loads(sys.argv[1])['job_id'])" "$SUBMIT")
+          TOK=$(python -c "import json,sys;print(json.loads(sys.argv[1])['job_token'])" "$SUBMIT")
+          for _ in $(seq 1 90); do
+            OUT=$(curl -sf -H "X-Job-Token: $TOK" http://127.0.0.1:8001/autopsy/jobs/$JID)
+            echo "$OUT" | grep -q '"status":"done"' && break
+            echo "$OUT" | grep -q '"status":"failed"' && { echo "$OUT"; exit 1; }
+            sleep 2
+          done
+          echo "$OUT"
+          python - "$OUT" <<'PY'
+          import json, sys
+          job = json.loads(sys.argv[1])
+          assert job["status"] == "done", job
+          res = job["result"]
+          assert res["tier"] == "verdict", res
           assert isinstance(res["inflation_pct"], int), res
           assert set(res) == {"tier", "inflation_pct", "inflation_basis",
                               "inflation_state", "warnings", "contact"}, sorted(res)
           raw = json.dumps(job)
           for leaked in ("ladder", "readout", "specimen", "headline",
                          "lookup_pct_of_reported", "permutation_floor"):
-              assert leaked not in raw, f"{leaked} reached the free response"
+              assert leaked not in raw, f"{leaked} reached the withheld response"
           assert "actaruslab@proton.me" in res["contact"]["message"]
           assert f"+{res['inflation_pct']}%" in res["contact"]["message"]
-          print("free tier ok:", res["inflation_pct"], "%", res["inflation_basis"])
+          print("verdict-only ok:", res["inflation_pct"], "%", res["inflation_basis"])
           PY

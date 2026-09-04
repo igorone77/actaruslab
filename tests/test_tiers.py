@@ -1,10 +1,12 @@
 """
 The two tiers, and who owns a result.
 
-Autopsy is free and the engine is open. What it hands back is not: the free
-tier is the synthetic verdict — one percentage — and the diagnosis behind it
-is reserved. Two properties are worth a test each, because both are the kind
-that rot silently:
+Autopsy is free and the engine is open, and by default an audit hands back
+everything it found. A deployment that sets AUTOPSY_VERDICT_ONLY hands back
+the synthetic verdict alone — one percentage — and withholds the diagnosis
+behind it. These test the withholding machinery, which has to keep working
+whether or not it is currently switched on. Two properties are worth a test
+each, because both are the kind that rot silently:
 
   · the withheld part must not be in the response *at all*. Not hidden under
     another key, not rounded, not encoded. Inspecting the raw JSON must not
@@ -63,11 +65,11 @@ FULL = {
 
 # ── what the free tier is ─────────────────────────────────────────────
 
-def test_the_free_tier_is_the_percentage_and_nothing_else():
+def test_the_verdict_tier_is_the_percentage_and_nothing_else():
     free = tiers.public_view(FULL)
     assert set(free) == {"tier", "inflation_pct", "inflation_basis",
                          "inflation_state", "warnings", "contact"}
-    assert free["tier"] == "free"
+    assert free["tier"] == "verdict"
     assert free["inflation_pct"] == 19          # 0.709 / 0.597 - 1
     assert free["inflation_basis"] == "scaffold split"
 
@@ -188,18 +190,26 @@ def test_the_free_response_offers_no_way_to_pay():
 
 # ── the reserved tier ─────────────────────────────────────────────────
 
-def test_a_subscriber_gets_the_audit_whole():
+def test_a_subscriber_gets_the_audit_whole(monkeypatch):
+    """Even where the deployment withholds from everybody else."""
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
     out = tiers.view_for(FULL, {"key_hash": "abc"})
-    assert out["tier"] == "reserved"
+    assert out["tier"] == "full"
     assert out["ladder"] == FULL["ladder"]
     assert out["verdict"]["headline"] == FULL["verdict"]["headline"]
 
 
-def test_anything_that_is_not_a_subscription_gets_the_free_tier():
+def test_anything_that_is_not_a_subscription_gets_the_verdict_tier(monkeypatch):
     """`is not None` is not the test. An unresolved dependency, a sentinel, a
-    stray truthy default — none of them buy the diagnosis."""
+    stray truthy default — none of them buy the diagnosis.
+
+    Only meaningful where there is something to buy, so this one switches the
+    withholding on: with it off everyone reads the audit anyway and the
+    assertion would pass without testing anything.
+    """
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
     for impostor in (None, object(), "yes", 1, {}, {"email": "a@b.c"}):
-        assert tiers.view_for(FULL, impostor)["tier"] == "free"
+        assert tiers.view_for(FULL, impostor)["tier"] == "verdict"
 
 
 # ── ownership, which the paywall does not govern ──────────────────────
@@ -217,8 +227,17 @@ def _job(result=None, key_hash=None):
 
 def test_the_owner_of_a_free_audit_can_read_it(monkeypatch):
     monkeypatch.delenv("AUTOPSY_PAYWALL_ENABLED", raising=False)
+    monkeypatch.delenv("AUTOPSY_VERDICT_ONLY", raising=False)
     jid, token = _job()
-    out = api.job_status(jid, sub=None, x_job_token=token)
+    out = api.job_status(jid, sub=None, x_job_token=token, autopsy_session="")
+    assert out["result"]["tier"] == "full"
+
+
+def test_the_owner_reads_the_verdict_where_the_deployment_withholds(monkeypatch):
+    monkeypatch.delenv("AUTOPSY_PAYWALL_ENABLED", raising=False)
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    jid, token = _job()
+    out = api.job_status(jid, sub=None, x_job_token=token, autopsy_session="")
     assert out["result"]["inflation_pct"] == 19
 
 
@@ -229,7 +248,7 @@ def test_nobody_else_can_read_it_even_with_the_paywall_off(monkeypatch):
     jid, _ = _job()
     for wrong in ("", "not-the-token", api.issue_job_token()):
         with pytest.raises(HTTPException) as e:
-            api.job_status(jid, sub=None, x_job_token=wrong)
+            api.job_status(jid, sub=None, x_job_token=wrong, autopsy_session="")
         assert e.value.status_code == 404
         assert "unknown job" in e.value.detail
 
@@ -237,9 +256,11 @@ def test_nobody_else_can_read_it_even_with_the_paywall_off(monkeypatch):
 def test_one_subscriber_cannot_read_another_subscribers_job():
     jid, _ = _job(key_hash="hash_of_alices_key")
     with pytest.raises(HTTPException) as e:
-        api.job_status(jid, sub={"key_hash": "hash_of_bobs_key"}, x_job_token="")
+        api.job_status(jid, sub={"key_hash": "hash_of_bobs_key"}, x_job_token="",
+                       autopsy_session="")
     assert e.value.status_code == 404
-    api.job_status(jid, sub={"key_hash": "hash_of_alices_key"}, x_job_token="")
+    api.job_status(jid, sub={"key_hash": "hash_of_alices_key"}, x_job_token="",
+                   autopsy_session="")
 
 
 def test_a_job_nobody_owns_is_readable_by_nobody():
@@ -249,9 +270,10 @@ def test_a_job_nobody_owns_is_readable_by_nobody():
     api._jobs[jid] = {"status": "done", "progress": "complete", "result": FULL,
                       "error": None, "created": time.time(), "started": time.time(),
                       "finished": time.time(), "rows": 300,
-                      "key_hash": None, "owner_hash": None}
+                      "key_hash": None, "owner_hash": None, "session_hash": None}
     with pytest.raises(HTTPException) as e:
-        api.job_status(jid, sub=None, x_job_token=api.issue_job_token())
+        api.job_status(jid, sub=None, x_job_token=api.issue_job_token(),
+                       autopsy_session="")
     assert e.value.status_code == 404
 
 

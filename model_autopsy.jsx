@@ -106,13 +106,17 @@ export default function ModelAutopsyNeutra() {
   }, []);
 
   // Two shapes come back from the engine and they are not interchangeable.
-  // `reserved` is the whole audit and drives every panel. `free` is the
-  // synthetic verdict — one percentage — and the ladder on screen stays the
-  // BACE-1 benchmark, which the contact panel says in as many words. Painting
-  // a benchmark ladder as if it were the visitor's own data would be the one
-  // dishonest thing this app could do.
-  const full = result && result.tier === "reserved" ? result : null;
-  const free = result && result.tier === "free" ? result : null;
+  // The full audit drives every panel. The verdict shape is one percentage,
+  // and the ladder on screen stays the BACE-1 benchmark, which the contact
+  // panel says in as many words. Painting a benchmark ladder as if it were
+  // the visitor's own data would be the one dishonest thing this app could do.
+  //
+  // Decided on what the payload actually contains, not on result.tier. A name
+  // is a promise about a shape; the shape itself is the fact. Reading the tier
+  // string is how a page and an API drift apart across a deploy — which has
+  // already cost this project one debugging session.
+  const full = result && Array.isArray(result.ladder) ? result : null;
+  const free = result && !full && result.contact ? result : null;
   const D = full ? fromResult(full, file ? file.name : "uploaded data") : DEMO;
   const warnings = free ? (free.warnings || []) : (D.warnings || []);
   const busy = status === "running";
@@ -137,7 +141,7 @@ export default function ModelAutopsyNeutra() {
     setVerdict(false); setRevealed(0);
     try {
       const data = await runFromFile(file, { smiles: cols.smiles, y: cols.y, date: cols.date || undefined });
-      reveal(data.tier === "reserved" ? data.ladder.filter((r) => r.r2 !== null) : DEMO.rungs);
+      reveal(Array.isArray(data.ladder) ? data.ladder.filter((r) => r.r2 !== null) : DEMO.rungs);
     } catch { /* surfaced through `error` below */ }
   };
 

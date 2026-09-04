@@ -188,3 +188,129 @@ def test_the_cookie_is_secure_on_an_https_deployment(free, csv_bytes, monkeypatc
 
     monkeypatch.setenv("AUTOPSY_PUBLIC_URL", "https://autopsy.example.org")
     assert "secure" in _submit(free, csv_bytes).headers["set-cookie"].lower()
+
+
+# ── what an audit hands back, over HTTP, in each configuration ────────
+# The switch that decides this is not the paywall switch, and conflating the
+# two is what put a deployment with the paywall visibly off into verdict-only
+# mode with no way to see why. Each position is pinned here on a real audit
+# of a real file, so "the full diagnosis" means the rungs of *that* file
+# rather than a shape assertion that a demo payload could satisfy.
+
+# Every test in this file shares one worker thread and one process-wide queue,
+# so a job waits behind whatever was submitted before it. Budget in wall-clock
+# seconds, generously, and only for the two tests that genuinely need a real
+# audit — a flaky test is worse than no test, and an earlier version of this
+# helper counted iterations and failed whenever the machine was busy.
+_AUDIT_BUDGET_S = 180
+
+
+def _finish(client, csv_bytes):
+    """Submit and poll to completion. Returns the result the client sees."""
+    sub = _submit(client, csv_bytes)
+    token = {"X-Job-Token": sub.json()["job_token"]}
+    deadline = time.monotonic() + _AUDIT_BUDGET_S
+    while time.monotonic() < deadline:
+        out = client.get(f"/autopsy/jobs/{sub.json()['job_id']}", headers=token)
+        assert out.status_code == 200, out.text
+        body = out.json()
+        if body["status"] == "done":
+            return body["result"]
+        assert body["status"] != "failed", body
+        time.sleep(0.2)
+    raise AssertionError(f"the audit did not finish in {_AUDIT_BUDGET_S}s")
+
+
+def _finished_job(client, result):
+    """A job already done, read back through the endpoint.
+
+    The tier decision is made when the result is served, not when it is
+    computed, so anything about *which* tier a caller gets can be asserted on
+    a planted result. Only the two tests that check the audit's own contents
+    need to pay for a real one.
+    """
+    import uuid
+    jid, token = uuid.uuid4().hex, api.issue_job_token()
+    now = time.time()
+    api._jobs[jid] = {"status": "done", "progress": "complete", "result": result,
+                      "error": None, "created": now, "started": now,
+                      "finished": now, "rows": 60, "key_hash": None,
+                      "owner_hash": api._token_hash(token), "session_hash": None}
+    out = client.get(f"/autopsy/jobs/{jid}", headers={"X-Job-Token": token})
+    assert out.status_code == 200, out.text
+    return out.json()["result"]
+
+
+PLANTED = {"specimen": {"n_compounds": 60}, "ladder": [{"kind": "reported", "r2": 0.7}],
+           "verdict": {"reported": 0.7, "survives_scaffold": 0.6, "headline": "h"},
+           "readout": [], "warnings": [], "meta": {"seed": 0}}
+
+
+def test_paywall_off_serves_the_whole_diagnosis(free, csv_bytes, monkeypatch):
+    """The default, and the deployed configuration: no flags at all. An audit
+    comes back as the engine built it — every rung of the uploaded file, the
+    scaffold composition, the readout, the reproducible metadata."""
+    monkeypatch.delenv("AUTOPSY_VERDICT_ONLY", raising=False)
+    res = _finish(free, csv_bytes)
+
+    assert res["tier"] == "full"
+    assert set(res) == {"tier", "specimen", "ladder", "verdict", "readout",
+                        "warnings", "meta"}
+
+    # the rungs of *this* file, not a benchmark: 60 compounds went in
+    assert res["specimen"]["n_compounds"] == 60
+    assert {r["kind"] for r in res["ladder"]} >= {"reported", "lookup", "floor"}
+    assert res["verdict"]["reported"] is not None
+    assert res["verdict"]["headline"]
+    assert res["readout"] and res["meta"]["seed"] == 0
+
+
+def test_verdict_only_withholds_it_again(free, csv_bytes, monkeypatch):
+    """One variable restores the lead-generating showcase, and it withholds by
+    building the response rather than by trimming it."""
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    res = _finish(free, csv_bytes)
+
+    assert res["tier"] == "verdict"
+    assert set(res) == {"tier", "inflation_pct", "inflation_basis",
+                        "inflation_state", "warnings", "contact"}
+    assert "ladder" not in res and "specimen" not in res
+
+
+def test_the_two_switches_are_independent(free, monkeypatch):
+    """The paywall being off must not imply withholding, and vice versa. This
+    is the pairing that was wrong: one flag answering two questions."""
+    monkeypatch.delenv("AUTOPSY_PAYWALL_ENABLED", raising=False)
+    monkeypatch.delenv("AUTOPSY_VERDICT_ONLY", raising=False)
+    assert _finished_job(free, PLANTED)["tier"] == "full"
+
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    assert _finished_job(free, PLANTED)["tier"] == "verdict"
+
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "false")
+    assert _finished_job(free, PLANTED)["tier"] == "full"
+
+
+@pytest.mark.parametrize("value,withheld", [("true", True), ("1", True), ("on", True),
+                                            ("yes", True), ("false", False),
+                                            ("0", False), ("", False), ("maybe", False)])
+def test_the_switch_reads_the_obvious_spellings(monkeypatch, value, withheld):
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", value)
+    from autopsy import tiers
+    assert tiers.verdict_only() is withheld
+
+
+def test_the_switch_is_read_at_request_time_not_at_import(free, monkeypatch):
+    """Flipping it must take effect without restarting the process, or a
+    deployment's setting can be shadowed by whatever was set at load."""
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    assert _finished_job(free, PLANTED)["tier"] == "verdict"
+    monkeypatch.delenv("AUTOPSY_VERDICT_ONLY")
+    assert _finished_job(free, PLANTED)["tier"] == "full"
+
+
+def test_a_subscriber_reads_everything_even_when_withholding_is_on(paid, monkeypatch):
+    """Withholding is aimed at visitors, not at the people who paid."""
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    res = _finished_job(paid, PLANTED)
+    assert res["tier"] == "full" and "ladder" in res
