@@ -28,7 +28,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          # httpx backs fastapi's TestClient, which tests/test_job_lifecycle.py
+          # needs to drive the app over HTTP with a cookie jar. Test-only, so
+          # it stays out of requirements.txt and the container image.
+          pip install -r requirements.txt pytest httpx
 
       - name: BACE-1 regression audit + surface smoke
         run: pytest tests/ -v -s

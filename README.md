@@ -54,11 +54,21 @@ cannot leak through it by default. `GET /autopsy/demo` is the exception on
 purpose: the BACE-1 audit is published in full, so a visitor can see exactly
 what the reserved tier contains before asking for it on their own data.
 
-Free does not mean public. A result belongs to whoever submitted it: the job
-submit returns a `job_token` once, held only by the browser that ran the
-audit, and polling without it answers **404** — the same answer as a job that
-never existed, because a 403 would confirm the id belongs to someone. That
-check runs in every configuration and is not connected to billing.
+Free does not mean public. A result belongs to whoever submitted it, and the
+submit hands back two claims on it: a `job_token` in the response body, for
+scripts and the CLI, and an HttpOnly `autopsy_session` cookie, which a browser
+presents on its own without the page having to remember anything. Either one
+reads the result back; polling with neither answers **404** — the same answer
+as a job that never existed, because a 403 would confirm the id belongs to
+someone. The check runs in every configuration and is not connected to
+billing.
+
+The cookie is there because the token alone was too brittle to be the only
+claim: it lived in one closure in one tab, so a reload lost a running audit, a
+second tab could not see it, and a page that did not know to send the header
+was told its live job had expired. It does not widen who can read a result —
+HttpOnly, SameSite, and Secure wherever `AUTOPSY_PUBLIC_URL` is https — only
+which of that browser's own audits it can read.
 
 Ask for the full diagnosis at **actaruslab@proton.me**.
 
@@ -90,7 +100,8 @@ Stripe Checkout takes the payment, a signature-verified webhook grants access,
 and the Stripe customer portal handles cancellation. A subscription issues one
 API key, shown once and stored only as a SHA-256 hash, presented as
 `Authorization: Bearer ma_…` or the `autopsy_key` cookie. With the paywall on,
-that key is the second way to own a job result, alongside the `job_token`.
+that key is a third way to own a job result, alongside the `job_token` and
+the session cookie.
 
 Subscriber records live in SQLite (`AUTOPSY_DB`) rather than in memory: a
 restart may forget a running audit, but it may never forget who paid. **Point

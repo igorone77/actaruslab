@@ -1,0 +1,190 @@
+"""
+Submit, then poll — over real HTTP, in both paywall positions.
+
+This file exists because of a bug the rest of the suite could not see. The
+other tests call the endpoint functions directly and pass `sub` themselves,
+so nothing was exercising what a client actually sends: headers, cookies, and
+the fact that the two requests are separate. A job could be alive and
+computing while every poll answered 404, and 102 green tests said nothing.
+
+So these drive the app through TestClient, which keeps a cookie jar the way a
+browser does. The property under test is the one the product rests on: a job
+submitted is a job that can immediately be read back by the client that
+submitted it — and by nobody else.
+"""
+import time
+
+import pandas as pd
+import pytest
+from fastapi.testclient import TestClient
+
+from autopsy import api, billing
+
+BACE = pytest.importorskip("pathlib").Path(__file__).resolve().parent.parent / "bace.csv"
+
+ALIVE = {"queued", "running", "done"}
+
+
+@pytest.fixture(scope="module")
+def csv_bytes():
+    """Small enough that the audit finishes in about a second, large enough
+    that the engine accepts it."""
+    df = pd.read_csv(BACE, usecols=["smiles", "pIC50"]).head(60)
+    return df.to_csv(index=False).encode()
+
+
+def _submit(client, csv_bytes):
+    """Always assert the 202 here. These tests all share one process-wide
+    queue, and a submit rejected for depth would otherwise surface much later
+    as a missing cookie or a mystery 404 — which is exactly the class of
+    confusion this file was written to end."""
+    res = client.post("/autopsy/jobs",
+                      files={"file": ("s.csv", csv_bytes, "text/csv")},
+                      data={"smiles": "smiles", "y": "pIC50", "k": "3"})
+    assert res.status_code == 202, f"{res.status_code}: {res.text}"
+    return res
+
+
+@pytest.fixture(autouse=True)
+def hermetic(monkeypatch):
+    """Two things these tests must not inherit from whatever ran before.
+
+    The queue ceiling is a capacity rule tested elsewhere; here it would only
+    couple these tests to how fast the worker drains between them.
+
+    AUTOPSY_PUBLIC_URL decides whether the session cookie is marked Secure,
+    and TestClient speaks http — so a leaked https value silently drops every
+    cookie and these tests fail as 404s with no hint why. That is not
+    hypothetical either: test_billing.py reloads the billing module with an
+    https URL patched in, and a reloaded module constant outlives the
+    monkeypatch that set it.
+    """
+    monkeypatch.setattr(api, "QUEUE_DEPTH", 100)
+    monkeypatch.delenv("AUTOPSY_PUBLIC_URL", raising=False)
+
+
+@pytest.fixture()
+def free(monkeypatch):
+    """The deployed configuration: no flag, no key, no subscription."""
+    monkeypatch.delenv("AUTOPSY_PAYWALL_ENABLED", raising=False)
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    with TestClient(api.app) as c:
+        yield c
+
+
+@pytest.fixture()
+def paid(tmp_path, monkeypatch):
+    """The paid configuration, and a live key to go with it. DB_PATH is read
+    at connect time, so pointing the module at a tmp file is enough — no
+    reload, which would leave api.py holding the old dependency."""
+    monkeypatch.setenv("AUTOPSY_PAYWALL_ENABLED", "true")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setattr(billing, "DB_PATH", str(tmp_path / "subs.db"))
+    billing.init_db()
+    key = billing.create_subscriber("t@t.t", "cus_t", "sub_t", "active",
+                                    time.time() + 86400)
+    with TestClient(api.app) as c:
+        c.headers.update({"Authorization": f"Bearer {key}"})
+        yield c
+
+
+# ── the regression ────────────────────────────────────────────────────
+
+def test_submit_then_immediate_poll_finds_the_job_paywall_off(free, csv_bytes):
+    """202 then 404 was the report. The job never died: the poll arrived
+    without the claim that owns it, and the answer for that is the same 404
+    as for a job that never existed."""
+    sub = _submit(free, csv_bytes)
+    job_id = sub.json()["job_id"]
+
+    poll = free.get(f"/autopsy/jobs/{job_id}",
+                    headers={"X-Job-Token": sub.json()["job_token"]})
+    assert poll.status_code == 200, poll.text
+    assert poll.json()["status"] in ALIVE
+
+
+def test_submit_then_immediate_poll_finds_the_job_paywall_on(paid, csv_bytes):
+    sub = _submit(paid, csv_bytes)
+    job_id = sub.json()["job_id"]
+
+    poll = paid.get(f"/autopsy/jobs/{job_id}",
+                    headers={"X-Job-Token": sub.json()["job_token"]})
+    assert poll.status_code == 200, poll.text
+    assert poll.json()["status"] in ALIVE
+
+
+def test_the_browser_polls_on_its_cookie_alone(free, csv_bytes):
+    """The actual fix. A page that does not know to send X-Job-Token — an
+    older bundle out of a browser cache, a reload that dropped the token, a
+    second tab — still reads its own audit, because the cookie set at submit
+    goes back on its own."""
+    sub = _submit(free, csv_bytes)
+    assert api.SESSION_COOKIE in sub.cookies or api.SESSION_COOKIE in free.cookies
+
+    poll = free.get(f"/autopsy/jobs/{sub.json()['job_id']}")   # no header at all
+    assert poll.status_code == 200, poll.text
+    assert poll.json()["status"] in ALIVE
+
+
+def test_the_cookie_survives_a_reload_and_a_second_tab(free, csv_bytes):
+    """Same browser, new page object: the audit is still readable. This is
+    what the token in a closure could not do."""
+    job_id = _submit(free, csv_bytes).json()["job_id"]
+    session = free.cookies.get(api.SESSION_COOKIE)
+
+    with TestClient(api.app, cookies={api.SESSION_COOKIE: session}) as tab2:
+        assert tab2.get(f"/autopsy/jobs/{job_id}").status_code == 200
+
+
+def test_one_session_reads_every_audit_it_started(free, csv_bytes):
+    first = _submit(free, csv_bytes).json()["job_id"]
+    second = _submit(free, csv_bytes).json()["job_id"]
+    for job_id in (first, second):
+        assert free.get(f"/autopsy/jobs/{job_id}").status_code == 200
+
+
+# ── and still nobody else ─────────────────────────────────────────────
+
+def test_a_different_browser_still_gets_404(free, csv_bytes):
+    """The fix must not have turned ownership off. A client with no cookie,
+    no token and no key holds nothing, and the job id alone is not a claim."""
+    job_id = _submit(free, csv_bytes).json()["job_id"]
+
+    with TestClient(api.app) as stranger:
+        out = stranger.get(f"/autopsy/jobs/{job_id}")
+    assert out.status_code == 404
+    assert "unknown job" in out.json()["detail"]
+
+
+def test_a_stolen_job_id_with_a_wrong_cookie_gets_404(free, csv_bytes):
+    job_id = _submit(free, csv_bytes).json()["job_id"]
+    forged = {api.SESSION_COOKIE: api.issue_job_token()}
+    with TestClient(api.app, cookies=forged) as attacker:
+        assert attacker.get(f"/autopsy/jobs/{job_id}").status_code == 404
+
+
+def test_the_404_no_longer_explains_the_wrong_cause(free):
+    """It used to say the job had expired or the service had restarted, which
+    sent the reader to look for a bug in the job store. It has to name the
+    claim too — and say the same thing for every id, or the message itself
+    becomes the leak."""
+    out = free.get("/autopsy/jobs/definitely-not-a-job")
+    assert out.status_code == 404
+    assert "did not carry the claim" in out.json()["detail"]
+
+
+def test_the_session_cookie_is_not_readable_by_script(free, csv_bytes):
+    """HttpOnly and SameSite, or the cookie would be a downgrade on the
+    header it backs up rather than a repair."""
+    sub = _submit(free, csv_bytes)
+    raw = sub.headers["set-cookie"].lower()
+    assert "httponly" in raw and "samesite=lax" in raw
+
+
+def test_the_cookie_is_secure_on_an_https_deployment(free, csv_bytes, monkeypatch):
+    """And not on a localhost one, or the laptop install loses every cookie
+    it sets. Both positions pinned, because getting either wrong is silent."""
+    assert "secure" not in _submit(free, csv_bytes).headers["set-cookie"].lower()
+
+    monkeypatch.setenv("AUTOPSY_PUBLIC_URL", "https://autopsy.example.org")
+    assert "secure" in _submit(free, csv_bytes).headers["set-cookie"].lower()

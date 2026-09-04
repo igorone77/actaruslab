@@ -86,7 +86,8 @@ from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, UploadFile, File, Form, HTTPException
+from fastapi import (Cookie, Depends, FastAPI, Header, Response, UploadFile,
+                     File, Form, HTTPException)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -268,19 +269,28 @@ _executor = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="autopsy"
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
-# One answer for "not yours" and for "never existed". A 403 would confirm
-# that this id belongs to someone, which is already the leak.
-_NO_SUCH_JOB = "unknown job — it expired, or the service restarted"
+# One answer for "not yours", for "you brought no claim" and for "never
+# existed". A 403 would confirm that this id belongs to someone, which is
+# already the leak — so the three cases must be indistinguishable, and the
+# sentence therefore has to name all three. An earlier version said only
+# "it expired, or the service restarted", which was a confident explanation
+# of the wrong cause: a caller whose client did not send its claim was told
+# its running job had died.
+_NO_SUCH_JOB = ("unknown job — it expired, the service restarted, or this "
+                "request did not carry the claim that owns it")
+
+# The browser's claim on the audits it started. Set at submit, HttpOnly so no
+# script can read it, same-site so it is never sent from anywhere else.
+SESSION_COOKIE = "autopsy_session"
 
 
 def issue_job_token() -> str:
-    """The claim on a job's result, minted at submit and returned once.
+    """A claim on an audit: 256 bits from the OS, stored only as a hash.
 
-    An audit run without a subscription still has an owner: whoever uploaded
-    the file. This is what makes that true when there is no account to hang
-    ownership on — 256 bits from the OS, held by the browser that submitted,
-    stored here only as a hash. Losing it means the result is unreadable by
-    anybody, which is the correct failure for someone else's data.
+    An audit run without a subscription still has an owner — whoever uploaded
+    the file — and this is what makes that true when there is no account to
+    hang ownership on. Used for both claims: the per-job token returned to the
+    caller, and the per-browser session behind the cookie.
     """
     return secrets.token_urlsafe(32)
 
@@ -289,24 +299,42 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _authorize_job(job: dict, sub, token: str) -> None:
+def _authorize_job(job: dict, sub, token: str, session: str) -> None:
     """May this caller read this result? Nothing to do with payment.
 
-    The free tier makes an audit cheap, not public. Two ways to own a job,
+    The free tier makes an audit cheap, not public. Three ways to own a job,
     checked in every configuration including the free one:
 
-      · the one-time token from the submit response — an anonymous audit;
+      · the session cookie set at submit — the browser that ran the audit;
+      · the one-time token from the submit response — scripts and the CLI;
       · the subscription key that submitted it, when the paywall is on.
 
-    A job with neither recorded is owned by nobody and readable by nobody.
-    That is the safe direction to fail: an entry point that forgets to set an
-    owner locks its own results instead of publishing everyone else's.
+    The cookie exists because the token alone was too brittle to be the only
+    claim. It lives in one closure in one tab: a reload lost a running audit,
+    a second tab could not see it, and any client that did not know to send
+    the header — an older bundle held in a browser cache, most of all — got a
+    404 on a job that was alive and computing. The cookie is presented by the
+    browser without the page having to remember anything, so none of those
+    lose the audit, while a different browser, machine or person still gets
+    the 404 they should.
+
+    It does not widen who can read a result: the cookie is HttpOnly, so no
+    script can read it, and SameSite, so it is never sent from another site.
+    What it widens is scope — whoever holds it reads that browser's audits
+    rather than one of them — and the trust boundary is the same either way.
+
+    A job with none of the three recorded is owned by nobody and readable by
+    nobody. That is the safe direction to fail: an entry point that forgets to
+    set an owner locks its own results instead of publishing everyone else's.
     """
     if (sub is not None and job.get("key_hash")
             and hmac.compare_digest(job["key_hash"], sub["key_hash"])):
         return
     if (token and job.get("owner_hash")
             and hmac.compare_digest(job["owner_hash"], _token_hash(token))):
+        return
+    if (session and job.get("session_hash")
+            and hmac.compare_digest(job["session_hash"], _token_hash(session))):
         return
     raise HTTPException(status_code=404, detail=_NO_SUCH_JOB)
 
@@ -359,22 +387,29 @@ def _work(job_id: str, df: pd.DataFrame, smiles: str, y: str,
 
 @app.post("/autopsy/jobs", status_code=202)
 async def submit_job(
+    response: Response,
     file: UploadFile = File(...),
     smiles: str = Form(...),
     y: str = Form(...),
     date: Optional[str] = Form(None),
     k: int = Form(5),
     sub=Depends(require_subscription),
+    autopsy_session: str = Cookie(default=""),
 ):
     """Validate now, audit later. Bad columns and oversized data still fail
     immediately with 4xx; only the slow part is deferred.
 
-    The response carries `job_token` once. It is the only claim on the result
-    and it is not recoverable — this process keeps a hash of it, exactly as
-    billing keeps a hash of an API key."""
+    Two claims on the result leave here, and either one reads it back. The
+    response carries `job_token` once, for scripts and the CLI; the response
+    also sets the session cookie, which is what a browser presents on its own
+    without the page having to hold anything. Both are stored as hashes only,
+    exactly as billing stores an API key."""
     df = _parse_upload(await file.read())
     _check_size(df)
     _precheck(df, smiles, y, date)
+
+    # One session per browser, minted on its first submit and reused after.
+    session = autopsy_session or issue_job_token()
 
     now = time.time()
     with _lock:
@@ -390,7 +425,18 @@ async def submit_job(
                          "error": None, "created": now, "started": None,
                          "finished": None, "rows": int(len(df)),
                          "key_hash": sub["key_hash"] if sub else None,
-                         "owner_hash": _token_hash(token)}
+                         "owner_hash": _token_hash(token),
+                         "session_hash": _token_hash(session)}
+
+    # Re-set on every submit so an active session does not expire mid-use.
+    # Secure only where the deployment is actually on HTTPS: forcing it would
+    # drop the cookie on a localhost install and break the very case this
+    # exists to fix. Read from the environment rather than billing.PUBLIC_URL,
+    # which is bound at import and can outlive the value it was read from.
+    response.set_cookie(
+        SESSION_COOKIE, session, httponly=True, samesite="lax", path="/",
+        max_age=JOB_TTL,
+        secure=os.getenv("AUTOPSY_PUBLIC_URL", "").startswith("https://"))
 
     # Spent here rather than on completion: a queued audit already holds a
     # worker, and refunded below if the failure turns out to be ours.
@@ -418,20 +464,22 @@ async def submit_job(
 
 @app.get("/autopsy/jobs/{job_id}")
 def job_status(job_id: str, sub=Depends(require_subscription),
-               x_job_token: str = Header(default="")):
+               x_job_token: str = Header(default=""),
+               autopsy_session: str = Cookie(default="")):
     """An audit result is the uploader's data, so only whoever submitted it
     can read it — free audit or paid one, the check is the same and it is
     always on. Job ids are unguessable, but that is not a reason to serve one
     to whoever asks.
 
-    The token travels in a header rather than the path so that it stays out
-    of access logs, browser history and referrers, which the job id does not.
+    The claim travels in a header or a cookie rather than the path, so it
+    stays out of access logs, browser history and referrers, which the job id
+    does not. See `_authorize_job` for why there are two of them.
     """
     with _lock:
         job = _jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail=_NO_SUCH_JOB)
-        _authorize_job(job, sub, x_job_token)
+        _authorize_job(job, sub, x_job_token, autopsy_session)
         out = {"job_id": job_id, "status": job["status"], "progress": job["progress"],
                "rows": job["rows"],
                "elapsed": round((job["finished"] or time.time()) - job["created"], 1)}
