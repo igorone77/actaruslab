@@ -119,9 +119,34 @@ if _ORIGINS:
     )
 
 
+def _mode() -> dict:
+    """What this deployment is currently configured to do.
+
+    Published because it has been invisible, and that has been expensive: the
+    only way to find out whether a server withholds its findings was to upload
+    a file and infer it from the shape of the reply, which reads identically
+    to a bug. Neither value is a secret — a caller learns the paywall from one
+    request and the tier from one audit — so saying it plainly costs nothing
+    and answers "why am I getting this?" in one look.
+
+    A server too old to know about these switches has no `mode` key at all,
+    which is itself the answer to "did my pull take effect?".
+    """
+    paywall, withheld = billing.paywall_enabled(), tiers.verdict_only()
+    if paywall:
+        note = "subscription required; a subscriber receives the full diagnosis"
+    elif withheld:
+        note = "free to run; returns the inflation percentage only"
+    else:
+        note = "free to run; returns the full diagnosis"
+    return {"paywall_enabled": paywall, "verdict_only": withheld,
+            "audits_return": "verdict" if withheld else "full", "note": note}
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "model-autopsy", "version": __version__}
+    return {"status": "ok", "service": "model-autopsy", "version": __version__,
+            "mode": _mode()}
 
 
 # ── validation, shared by every entry point ───────────────────────────

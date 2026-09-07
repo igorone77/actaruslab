@@ -314,3 +314,47 @@ def test_a_subscriber_reads_everything_even_when_withholding_is_on(paid, monkeyp
     monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
     res = _finished_job(paid, PLANTED)
     assert res["tier"] == "full" and "ladder" in res
+
+
+# ── the mode, published ───────────────────────────────────────────────
+# A deployment that withholds its findings looks exactly like a broken one
+# until you can ask which it is. These pin the answer, because the question
+# has now cost three debugging sessions and the field is the whole fix.
+
+def test_health_says_what_an_audit_will_return_by_default(free):
+    mode = free.get("/health").json()["mode"]
+    assert mode == {"paywall_enabled": False, "verdict_only": False,
+                    "audits_return": "full",
+                    "note": "free to run; returns the full diagnosis"}
+
+
+def test_health_says_so_when_the_deployment_withholds(free, monkeypatch):
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    mode = free.get("/health").json()["mode"]
+    assert mode["verdict_only"] is True and mode["audits_return"] == "verdict"
+    assert "percentage only" in mode["note"]
+
+
+def test_health_says_so_when_the_paywall_is_on(paid):
+    mode = paid.get("/health").json()["mode"]
+    assert mode["paywall_enabled"] is True
+    assert "subscription required" in mode["note"]
+
+
+def test_the_mode_tracks_the_environment_per_request(free, monkeypatch):
+    """Read live, not bound at import — otherwise the report could disagree
+    with the behaviour it is there to explain, which is worse than no report."""
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "true")
+    assert free.get("/health").json()["mode"]["audits_return"] == "verdict"
+    monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", "false")
+    assert free.get("/health").json()["mode"]["audits_return"] == "full"
+
+
+def test_the_reported_mode_matches_what_an_audit_actually_returns(free, csv_bytes,
+                                                                  monkeypatch):
+    """The report is only worth having if it cannot drift from the behaviour.
+    Both positions checked against a real audit, not against the flag."""
+    for value, expected in (("false", "full"), ("true", "verdict")):
+        monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", value)
+        assert free.get("/health").json()["mode"]["audits_return"] == expected
+        assert _finish(free, csv_bytes)["tier"] == expected

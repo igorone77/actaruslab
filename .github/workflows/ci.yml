@@ -44,6 +44,9 @@ jobs:
             sleep 1
           done
           curl -sf http://127.0.0.1:8000/health | grep -q '"status":"ok"'
+          # and it must say which mode it is in, or the next two steps are
+          # asserting behaviour nobody can explain from the outside
+          curl -sf http://127.0.0.1:8000/health | grep -q '"audits_return":"full"'
 
       # The tier split over real HTTP, with FastAPI resolving the dependency
       # for itself. The unit tests hand `sub` to the endpoints directly, so

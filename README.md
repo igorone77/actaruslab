@@ -287,9 +287,63 @@ nothing needs CORS. The CORS middleware only matters for a UI hosted
 elsewhere, and is still dev-open (`*`) — lock it to the UI origin before
 putting this on a public host.
 
+### Local use — the full diagnosis, for yourself
+
+This is the default. An audit on your own machine returns everything it
+found — all six rungs of the file you loaded, the dropped-row banner, the
+readout badges, the specimen tiles — with no key, no account and no
+environment variables at all:
+
+```powershell
+# PowerShell — from the repository root
+uvicorn autopsy.api:app                     # then open http://127.0.0.1:8000
+```
+
+If your shell already has the switches set from an earlier session, clear
+them rather than setting them to `"false"` — either works, but an unset
+variable is one less thing to be wrong about:
+
+```powershell
+Remove-Item Env:AUTOPSY_VERDICT_ONLY    -ErrorAction SilentlyContinue
+Remove-Item Env:AUTOPSY_PAYWALL_ENABLED -ErrorAction SilentlyContinue
+uvicorn autopsy.api:app
+```
+
+```bash
+# macOS / Linux
+unset AUTOPSY_VERDICT_ONLY AUTOPSY_PAYWALL_ENABLED
+uvicorn autopsy.api:app
+```
+
+**Check what the server will do before uploading anything.** `GET /health`
+reports the mode in force, and the page header shows it as `ENGINE · FULL` or
+`ENGINE · VERDICT ONLY`:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health | Select-Object -Expand mode
+```
+
+```console
+paywall_enabled : False
+verdict_only    : False
+audits_return   : full
+note            : free to run; returns the full diagnosis
+```
+
+If `mode` comes back empty, the running server predates this field — the
+checkout is behind, and `git pull` is the fix. If it says `verdict` and you
+did not ask for that, `AUTOPSY_VERDICT_ONLY` is set somewhere in the
+environment that launched it.
+
+There is deliberately no third "local mode" switch. `AUTOPSY_VERDICT_ONLY`
+unset already *is* full local use, and a flag that duplicates another flag is
+the thing that made this confusing in the first place. Set it in the public
+deployment, leave it unset on your machine, and the same binary does both.
+
 ### Endpoints
 
-- `GET  /health`
+- `GET  /health` — liveness, and `mode`: which switches are in force and what
+  an audit will return
 - `POST /autopsy/jobs`     — multipart upload → `202 {job_id}`; the audit runs off
   the request. What the UI uses, and what a hosted deployment needs.
 - `GET  /autopsy/jobs/{id}` — `{status, progress, elapsed, result?, error?}`

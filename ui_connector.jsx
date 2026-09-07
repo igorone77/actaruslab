@@ -48,16 +48,30 @@ function auth() {
   return k ? { Authorization: `Bearer ${k}` } : {};
 }
 
-// Is there an engine behind this page? Served by autopsy.api the answer is
-// yes; opened as a bare file or on a static host it is no, and the UI drops
-// its upload controls rather than offering a button that cannot work.
-export async function engineReachable() {
+// Is there an engine behind this page, and what will it hand back?
+//
+// Served by autopsy.api the answer is yes; opened as a bare file or on a
+// static host it is no, and the UI drops its upload controls rather than
+// offering a button that cannot work.
+//
+// `mode` says what an audit will return before one is run — a server that
+// withholds its findings looks exactly like a broken one until you know
+// which it is. Absent on a server older than that field, which is the answer
+// to a different question worth being able to ask.
+export async function engineHealth() {
   try {
     const res = await fetch(`${API_BASE}/health`, { method: "GET" });
-    return res.ok && (await res.json()).status === "ok";
+    if (!res.ok) return { up: false, mode: null };
+    const body = await res.json();
+    return { up: body.status === "ok", mode: body.mode || null };
   } catch {
-    return false;
+    return { up: false, mode: null };
   }
+}
+
+// Kept for callers that only need the boolean.
+export async function engineReachable() {
+  return (await engineHealth()).up;
 }
 
 // ── the hook the UI uses ─────────────────────────────────────────────

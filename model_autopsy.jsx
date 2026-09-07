@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useAutopsy, flagColor, engineReachable, subscriberKey, setSubscriberKey } from "./ui_connector.jsx";
+import { useAutopsy, flagColor, engineHealth, subscriberKey, setSubscriberKey } from "./ui_connector.jsx";
 
 // ═══════════════════════════════════════════════════════════════════
 // MODEL AUTOPSY — ActarusLab · NEUTRA-language build
@@ -94,6 +94,7 @@ export default function ModelAutopsyNeutra() {
   const [file, setFile] = useState(null);
   const [cols, setCols] = useState({ smiles: "smiles", y: "pIC50", date: "" });
   const [engineUp, setEngineUp] = useState(false);
+  const [mode, setMode] = useState(null);        // what the engine will return
   const [hasKey] = useState(() => !!subscriberKey());
   const timers = useRef([]);
   const { result, status, error, progress, paywall, runFromFile } = useAutopsy();
@@ -101,7 +102,10 @@ export default function ModelAutopsyNeutra() {
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   useEffect(() => {
     let alive = true;
-    engineReachable().then((up) => { if (alive) setEngineUp(up); });
+    engineHealth().then(({ up, mode: m }) => {
+      if (!alive) return;
+      setEngineUp(up); setMode(m);
+    });
     return () => { alive = false; };
   }, []);
 
@@ -185,8 +189,16 @@ export default function ModelAutopsyNeutra() {
                 <Dot /> <span style={{ fontFamily: sans, fontWeight: 500, fontSize: 14, color: C.textDim }}>Survival</span>
               </div>
             </div>
-            <Ghost label={full ? "LIVE" : free ? "VERDICT ONLY" : engineUp ? "ENGINE READY" : "BENCHMARK"}
-                   on={!!result || engineUp} />
+            {/* Before a run this says what the engine will return, so a
+                deployment that withholds is legible without uploading
+                anything to find out. A server too old to report its mode
+                falls back to ENGINE READY, which says that too. */}
+            <Ghost label={
+              full ? "LIVE"
+                : free ? "VERDICT ONLY"
+                : mode ? (mode.verdict_only ? "ENGINE · VERDICT ONLY" : "ENGINE · FULL")
+                : engineUp ? "ENGINE READY" : "BENCHMARK"
+            } on={!!result || engineUp} />
             {hasKey && <Ghost label="SUBSCRIBED" on />}
             <Ghost label="SPECIMEN" />
           </div>
