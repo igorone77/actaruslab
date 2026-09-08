@@ -23,25 +23,46 @@ def test_bace_headline_numbers():
     assert s["n_scaffold_series"] == 377
     assert s["n_singleton_series"] == 200
 
-    # The split is deterministic now, so these are tight bands around measured
-    # values rather than the wide ones the nondeterministic split needed.
-    # The 1-NN rungs are exact for a given CSV; the XGBoost rungs carry ~±0.002
-    # across xgboost builds, hence the slightly wider window on those.
-    assert 0.699 <= v["reported"] <= 0.719, v["reported"]                    # 0.709
-    assert 0.567 <= v["lookup_random"] <= 0.577, v["lookup_random"]          # 0.572
-    assert 0.587 <= v["survives_scaffold"] <= 0.607, v["survives_scaffold"]  # 0.597
-    assert 0.446 <= v["lookup_scaffold"] <= 0.456, v["lookup_scaffold"]      # 0.451
-    assert -0.24 <= v["permutation_floor"] <= -0.20, v["permutation_floor"]  # -0.222
+    # Each repeated rung is now a mean over five scaffold-disjoint / random
+    # partitions, so these moved when the bands arrived — and by less than the
+    # bands themselves, which is the point. Previous single-partition values in
+    # brackets. The 1-NN rungs are exact for a given partition set; the XGBoost
+    # rungs carry ~±0.002 across xgboost builds.
+    assert 0.704 <= v["reported"] <= 0.724, v["reported"]                    # 0.714 (was 0.709)
+    assert 0.560 <= v["lookup_random"] <= 0.570, v["lookup_random"]          # 0.565 (was 0.572)
+    assert 0.598 <= v["survives_scaffold"] <= 0.618, v["survives_scaffold"]  # 0.608 (was 0.597)
+    assert 0.421 <= v["lookup_scaffold"] <= 0.431, v["lookup_scaffold"]      # 0.426 (was 0.451)
+    assert -0.22 <= v["permutation_floor"] <= -0.18, v["permutation_floor"]  # -0.202
 
     # the two headline claims
-    assert 80 <= v["lookup_pct_of_reported"] <= 82, v["lookup_pct_of_reported"]
-    assert 0.136 <= v["learned_beyond_lookup"] <= 0.156, v["learned_beyond_lookup"]
+    assert 78 <= v["lookup_pct_of_reported"] <= 80, v["lookup_pct_of_reported"]
+    assert 0.162 <= v["learned_beyond_lookup"] <= 0.202, v["learned_beyond_lookup"]
+
+    # the bands themselves — the audit must never claim a precision it did not
+    # measure, so every repeated rung carries one and it is not zero
+    for key in ("reported", "lookup_random", "survives_scaffold", "lookup_scaffold"):
+        sd = v[key + "_sd"]
+        assert sd is not None and sd > 0, f"{key} has no error band: {sd}"
+
+    # Why the bands matter, on this dataset: the model's own contribution over
+    # the lookup is 0.18 with a spread of ±0.04. The single-partition audit
+    # read 0.146 and quoted it to three decimals. Both are the same finding;
+    # only one of them says so.
+    assert v["learned_beyond_lookup_sd"] > 0.02, v["learned_beyond_lookup_sd"]
+
+    # the harder split lands below the scaffold split, as the recent
+    # literature on scaffold-split optimism predicts
+    assert v["survives_similarity"] < v["survives_scaffold"], (
+        v["survives_similarity"], v["survives_scaffold"])
 
     print("✓ BACE regression: "
-          f"reported={v['reported']} lookup={v['lookup_random']} "
-          f"survives={v['survives_scaffold']} nn_scaffold={v['lookup_scaffold']} "
-          f"floor={v['permutation_floor']} "
-          f"lookup%={v['lookup_pct_of_reported']} learned={v['learned_beyond_lookup']}")
+          f"reported={v['reported']}±{v['reported_sd']} "
+          f"lookup={v['lookup_random']}±{v['lookup_random_sd']} "
+          f"survives={v['survives_scaffold']}±{v['survives_scaffold_sd']} "
+          f"nn_scaffold={v['lookup_scaffold']}±{v['lookup_scaffold_sd']} "
+          f"similarity={v['survives_similarity']} floor={v['permutation_floor']} "
+          f"lookup%={v['lookup_pct_of_reported']} "
+          f"learned={v['learned_beyond_lookup']}±{v['learned_beyond_lookup_sd']}")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,15 @@ def hermetic(monkeypatch):
     monkeypatch.setattr(api, "QUEUE_DEPTH", 100)
     monkeypatch.delenv("AUTOPSY_PUBLIC_URL", raising=False)
 
+    # One partition per rung. Every test in this file queues a real audit onto
+    # a single worker, so they serialise; at the default five partitions the
+    # backlog outran the poll budget and three tests failed for being behind a
+    # queue rather than for anything they assert. What is tested here is the
+    # HTTP path — tiers, ownership, the mode report — and none of it depends on
+    # how many partitions the statistics were measured over. The bands
+    # themselves are tests/test_methodology.py and tests/test_bace_smoke.py.
+    monkeypatch.setenv("AUTOPSY_REPEATS", "1")
+
 
 @pytest.fixture()
 def free(monkeypatch):
@@ -255,7 +264,7 @@ def test_paywall_off_serves_the_whole_diagnosis(free, csv_bytes, monkeypatch):
 
     assert res["tier"] == "full"
     assert set(res) == {"tier", "specimen", "ladder", "verdict", "readout",
-                        "warnings", "meta"}
+                        "warnings", "meta", "limitations"}
 
     # the rungs of *this* file, not a benchmark: 60 compounds went in
     assert res["specimen"]["n_compounds"] == 60
@@ -358,3 +367,31 @@ def test_the_reported_mode_matches_what_an_audit_actually_returns(free, csv_byte
         monkeypatch.setenv("AUTOPSY_VERDICT_ONLY", value)
         assert free.get("/health").json()["mode"]["audits_return"] == expected
         assert _finish(free, csv_bytes)["tier"] == expected
+
+
+# ── the cost knob ─────────────────────────────────────────────────────
+
+def test_repeats_is_a_deployment_knob_and_the_result_says_which_way(free, csv_bytes,
+                                                                    monkeypatch):
+    """The bands cost what they measure, so the trade is available and named.
+    Either way the audit must be honest about which it did: one partition
+    reports no spread *and* declares that it has none, rather than quietly
+    dropping the bands and leaving the numbers looking as firm as before."""
+    monkeypatch.setenv("AUTOPSY_REPEATS", "1")
+    lone = _finish(free, csv_bytes)
+    assert all(r.get("r2_sd") is None for r in lone["ladder"])
+    assert "single_partition" in {l["code"] for l in lone["limitations"]}
+    assert lone["meta"]["repeats"] == 1
+
+    monkeypatch.setenv("AUTOPSY_REPEATS", "2")
+    banded = _finish(free, csv_bytes)
+    assert banded["meta"]["repeats"] == 2
+    assert any(r.get("r2_sd") is not None for r in banded["ladder"])
+    assert "single_partition" not in {l["code"] for l in banded["limitations"]}
+
+
+def test_a_nonsense_repeats_value_falls_back_instead_of_crashing(free, monkeypatch):
+    monkeypatch.setenv("AUTOPSY_REPEATS", "not-a-number")
+    assert api._repeats() == api.engine_repeats
+    monkeypatch.setenv("AUTOPSY_REPEATS", "0")
+    assert api._repeats() == 1

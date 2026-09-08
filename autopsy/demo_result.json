@@ -20,92 +20,146 @@
       "model": "XGBoost",
       "condition": "random split",
       "kind": "reported",
-      "r2": 0.709,
-      "rmse": 0.724,
-      "spearman": 0.819
+      "n_reps": 5,
+      "r2": 0.714,
+      "r2_sd": 0.005,
+      "rmse": 0.717,
+      "rmse_sd": 0.006,
+      "spearman": 0.823,
+      "spearman_sd": 0.003
     },
     {
       "model": "1-NN lookup",
       "condition": "random split",
       "kind": "lookup",
-      "r2": 0.572,
-      "rmse": 0.878,
-      "spearman": 0.749
+      "n_reps": 5,
+      "r2": 0.565,
+      "r2_sd": 0.011,
+      "rmse": 0.885,
+      "rmse_sd": 0.011,
+      "spearman": 0.746,
+      "spearman_sd": 0.006
     },
     {
       "model": "XGBoost",
       "condition": "scaffold split \u00b7 377 series",
       "kind": "survives",
-      "r2": 0.597,
-      "rmse": 0.852,
-      "spearman": 0.746
+      "n_reps": 5,
+      "r2": 0.608,
+      "r2_sd": 0.012,
+      "rmse": 0.84,
+      "rmse_sd": 0.013,
+      "spearman": 0.752,
+      "spearman_sd": 0.008
     },
     {
       "model": "1-NN lookup",
       "condition": "scaffold split",
       "kind": "lookup",
-      "r2": 0.451,
-      "rmse": 0.995,
-      "spearman": 0.695
+      "n_reps": 5,
+      "r2": 0.426,
+      "r2_sd": 0.028,
+      "rmse": 1.016,
+      "rmse_sd": 0.024,
+      "spearman": 0.682,
+      "spearman_sd": 0.012
+    },
+    {
+      "model": "XGBoost",
+      "condition": "similarity split \u00b7 129 clusters @ 0.4",
+      "kind": "survives_similarity",
+      "r2": 0.446,
+      "rmse": 0.999,
+      "spearman": 0.593,
+      "note": "EXPERIMENTAL \u2014 not externally validated; read it as a second severity level below the scaffold split, not as a floor"
     },
     {
       "model": "XGBoost",
       "condition": "temporal split",
       "kind": "temporal",
       "r2": null,
+      "r2_sd": null,
       "rmse": null,
+      "rmse_sd": null,
       "spearman": null,
+      "spearman_sd": null,
+      "n_reps": 0,
       "note": "no assay dates supplied"
     },
     {
       "model": "Permutation",
       "condition": "shuffled target",
       "kind": "floor",
-      "r2": -0.222,
-      "rmse": 1.483,
-      "spearman": 0.02
+      "r2": -0.202,
+      "rmse": 1.471,
+      "spearman": 0.038
     }
   ],
   "verdict": {
-    "reported": 0.709,
-    "lookup_random": 0.572,
-    "survives_scaffold": 0.597,
-    "lookup_scaffold": 0.451,
-    "learned_beyond_lookup": 0.146,
+    "reported": 0.714,
+    "reported_sd": 0.005,
+    "lookup_random": 0.565,
+    "lookup_random_sd": 0.011,
+    "survives_scaffold": 0.608,
+    "survives_scaffold_sd": 0.012,
+    "lookup_scaffold": 0.426,
+    "lookup_scaffold_sd": 0.028,
+    "learned_beyond_lookup": 0.182,
+    "learned_beyond_lookup_sd": 0.038,
+    "survives_similarity": 0.446,
     "temporal": null,
-    "permutation_floor": -0.222,
-    "lookup_pct_of_reported": 81,
-    "headline": "81% of the reported R\u00b2 0.71 is reproducible by a pure nearest-neighbour lookup \u2014 recognition of known analogues, not learned SAR. On disjoint chemical series performance holds at 0.60. Beyond the lookup baseline, the model's own contribution is 0.146."
+    "permutation_floor": -0.202,
+    "lookup_pct_of_reported": 79,
+    "n_repeats": 5,
+    "descriptor_control": {
+      "available": true,
+      "lookup_pct_ecfp": 80,
+      "lookup_pct_alt": 77,
+      "flag_ecfp": "SEVERE",
+      "flag_alt": "SEVERE",
+      "agree": true,
+      "partition": "first random split",
+      "note": "Two unrelated fingerprints agree: the lookup reproduces 80% of the reported score on ECFP4 and 77% on the RDKit path fingerprint, both reading SEVERE. The finding is a property of the dataset, not of the descriptor."
+    },
+    "headline": "79% of the reported R\u00b2 0.71 \u00b1 0.01 is reproducible by a pure nearest-neighbour lookup \u2014 recognition of known analogues, not learned SAR. On disjoint chemical series performance holds at 0.61 \u00b1 0.01. Split on similarity instead of scaffold \u2014 harsher, and experimental \u2014 it reads 0.45. Beyond the lookup baseline, the model's own contribution is 0.182."
   },
   "readout": [
     {
       "signal": "Similarity leakage",
       "flag": "SEVERE",
-      "value_pct": 81,
-      "note": "Share of the reported score a bare nearest-neighbour lookup reproduces. High means the model is rewarded for recognising known analogues."
+      "value_pct": 79,
+      "note": "Share of the reported score a bare nearest-neighbour lookup reproduces \u2014 computed as lookup_random / reported. High means the model is rewarded for recognising known analogues. This is an ActarusLab interpretive indicator, not a standard QSAR metric, and it carries no external validation."
     },
     {
       "signal": "Scaffold transfer",
       "flag": "PARTIAL",
-      "value": 0.597,
+      "value": 0.608,
+      "sd": 0.012,
       "note": "Performance on genuinely new chemical series \u2014 what generalises beyond the training scaffolds."
+    },
+    {
+      "signal": "Similarity transfer",
+      "flag": "EXPERIMENTAL",
+      "value": 0.446,
+      "note": "Same model, split so training and test clusters sit below Tanimoto 0.4 of each other (129 clusters). Harsher than the scaffold split, because distinct scaffolds can still be near neighbours. Experimental and not externally validated \u2014 a second severity level, not a floor."
     },
     {
       "signal": "Learned structure",
       "flag": "THIN",
-      "value": 0.146,
+      "value": 0.182,
+      "sd": 0.038,
       "note": "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues, and there is little of it."
     },
     {
       "signal": "Temporal test",
       "flag": "N/A",
       "value": null,
-      "note": "Generalisation forward in time. Activates when assay dates are supplied \u2014 the split a random fold hides entirely."
+      "note": "Not run: no assay dates in this file. This is the gold standard for prospective use, and its absence is a gap in the audit rather than a pass \u2014 see the declared limitations."
     },
     {
       "signal": "Permutation floor",
       "flag": "CLEAN",
-      "value": -0.222,
+      "value": -0.202,
       "note": "Shuffled-target control. Should collapse toward zero; anything well above signals a pipeline leak."
     }
   ],
@@ -115,10 +169,34 @@
     "model": "XGBoost (400 trees, depth 6)",
     "k_folds": 5,
     "seed": 0,
+    "repeats": 5,
+    "similarity_cutoff": 0.4,
+    "n_similarity_clusters": 129,
+    "control_featurisation": "RDKit topological \u00b7 2048 bit",
     "columns": {
       "smiles": "smiles",
       "target": "pIC50",
       "date": null
     }
-  }
+  },
+  "limitations": [
+    {
+      "code": "no_time_split",
+      "level": "severe",
+      "title": "The most important test could not be run",
+      "text": "No assay-date column was supplied, so the temporal generalisation test \u2014 the gold standard for prospective use in QSAR \u2014 was not executed on this dataset. Everything above measures generalisation to new chemistry, not generalisation forward in time; a model can pass every rung here and still fail on next quarter's compounds. For the most severe audit this tool can perform, supply the assay dates."
+    },
+    {
+      "code": "lookup_pct_not_standard",
+      "level": "note",
+      "title": "The \u201c% is lookup\u201d figure is ours, not a literature metric",
+      "text": "It is lookup_random / reported: the fraction of the random-split score that a bare 1-NN Tanimoto lookup reproduces, expressed as a percentage. It is an ActarusLab interpretive indicator, not a standard QSAR statistic, and it has no external validation. Use it to compare rungs within one audit; do not quote it as a field-recognised measure."
+    },
+    {
+      "code": "similarity_split_experimental",
+      "level": "note",
+      "title": "The similarity split is experimental",
+      "text": "Sphere-exclusion clustering on Tanimoto at a fixed cutoff, split so that training and test clusters are dissimilar. It is reported beside the scaffold split, not instead of it, because recent work finds Bemis-Murcko scaffold splits still optimistic. The cutoff is a convention and this protocol has not been externally validated: read it as a second severity level, not as the true floor, and have a domain expert confirm it before relying on the number."
+    }
+  ]
 }

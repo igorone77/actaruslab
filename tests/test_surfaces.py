@@ -76,7 +76,7 @@ def test_api_records_returns_full_result(slice_df, subscriber):
     )
     out = autopsy_records(req, subscriber)
     assert set(out) == {"tier", "specimen", "ladder", "verdict", "readout",
-                        "warnings", "meta"}
+                        "warnings", "meta", "limitations"}
     assert out["tier"] == "full"
     assert out["specimen"]["n_compounds"] == 300
     assert out["verdict"]["reported"] is not None
@@ -105,7 +105,8 @@ def test_cli_writes_report_and_json(tmp_path, slice_df):
     assert rc == 0
     assert out_html.read_text().lstrip().startswith("<!DOCTYPE html>")
     data = json.loads(out_json.read_text())
-    assert set(data) == {"specimen", "ladder", "verdict", "readout", "warnings", "meta"}
+    assert set(data) == {"specimen", "ladder", "verdict", "readout", "warnings",
+                         "meta", "limitations"}
     assert data["verdict"]["reported"] is not None
 
 

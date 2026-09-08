@@ -25,7 +25,10 @@ KIND_COLOR = {"reported": C["green"], "survives": C["amber"], "temporal": C["cya
 FLAG_COLOR = {"SEVERE": C["red"], "LEAK": C["red"], "ARTIFACT": C["red"],
               "MODERATE": C["amber"], "PARTIAL": C["amber"], "THIN": C["amber"],
               "MARGINAL": C["amber"], "LOW": C["green"],
-              "NET": C["cyan"], "TESTED": C["cyan"], "CLEAN": C["green"], "N/A": C["mut"]}
+              "NET": C["cyan"], "TESTED": C["cyan"], "CLEAN": C["green"], "N/A": C["mut"],
+              # Not a severity: the similarity rung is unvalidated, so it is
+              # painted apart from the scale rather than somewhere on it.
+              "EXPERIMENTAL": C["ice"]}
 
 
 def _svg_ladder(ladder) -> str:
@@ -83,20 +86,63 @@ def _svg_ladder(ladder) -> str:
 
 
 def _strip(verdict) -> str:
-    cells = [("REPORTED", verdict["reported"], C["green"]),
-             ("LOOKUP", verdict["lookup_random"], C["red"]),
-             ("SURVIVES", verdict["survives_scaffold"], C["amber"]),
-             ("LEARNED", verdict["learned_beyond_lookup"], C["cyan"])]
+    cells = [("REPORTED", verdict["reported"], verdict.get("reported_sd"), C["green"]),
+             ("LOOKUP", verdict["lookup_random"], verdict.get("lookup_random_sd"), C["red"]),
+             ("SURVIVES", verdict["survives_scaffold"], verdict.get("survives_scaffold_sd"), C["amber"]),
+             ("LEARNED", verdict["learned_beyond_lookup"], verdict.get("learned_beyond_lookup_sd"), C["cyan"])]
     out = ""
-    for k, val, t in cells:
+    for k, val, sd, t in cells:
         # LEARNED carries three decimals wherever it appears — it is small
         # enough that the third one is signal, not noise
         dp = 3 if k == "LEARNED" else 2
         disp = "——" if val is None else f"{val:.{dp}f}"
+        # The band sits under the number rather than beside it: a reader who
+        # only wants the figure still reads it at a glance, and one comparing
+        # two rungs has the spread they need to know whether the gap is real.
+        band = ("" if sd is None else
+                f'<div style="font-family:monospace;font-size:11px;color:{C["mut"]};margin-top:3px">'
+                f'&#177; {sd:.{dp}f}</div>')
         out += (f'<div style="background:{C["panel"]};padding:11px 12px">'
                 f'<div style="font-size:9.5px;font-weight:600;letter-spacing:.14em;color:{C["textDim"]};margin-bottom:5px">{k}</div>'
-                f'<div style="font-family:monospace;font-size:20px;color:{t}">{disp}</div></div>')
+                f'<div style="font-family:monospace;font-size:20px;color:{t}">{disp}</div>{band}</div>')
     return out
+
+
+def _limitations(items) -> str:
+    """What the audit does not establish, rendered next to what it does.
+
+    An absent test that says nothing reads as a test that passed, which is the
+    single most misleading thing a validation report can do.
+    """
+    if not items:
+        return ""
+    rows = ""
+    for it in items:
+        tone = C["red"] if it["level"] == "severe" else C["amber"]
+        rows += (f'<div style="margin-bottom:12px;padding:12px 15px;border-radius:8px;'
+                 f'background:{C["panel"]};border:1px solid {tone}44;border-left:2px solid {tone}">'
+                 f'<div style="font-family:monospace;font-size:11px;font-weight:600;color:{tone}">'
+                 f'{html.escape(it["title"])}</div>'
+                 f'<div style="font-size:12.5px;line-height:1.55;color:{C["textDim"]};margin-top:6px">'
+                 f'{html.escape(it["text"])}</div></div>')
+    return (f'<div style="margin-top:18px">'
+            f'<div style="font-size:10px;font-weight:700;letter-spacing:.2em;'
+            f'color:{C["textDim"]};margin-bottom:10px">KNOWN LIMITS OF THIS AUDIT</div>'
+            f'{rows}</div>')
+
+
+def _descriptor(dc) -> str:
+    """The second-fingerprint control, stated whether or not it agrees."""
+    if not dc:
+        return ""
+    tone = C["mut"] if not dc.get("available") else (
+        C["green"] if dc.get("agree") else C["red"])
+    return (f'<div style="margin-top:14px;padding:12px 15px;border-radius:8px;'
+            f'background:{C["panel"]};border:1px solid {tone}44;border-left:2px solid {tone}">'
+            f'<div style="font-family:monospace;font-size:11px;font-weight:600;color:{tone}">'
+            f'DESCRIPTOR CONTROL</div>'
+            f'<div style="font-size:12.5px;line-height:1.55;color:{C["textDim"]};margin-top:6px">'
+            f'{html.escape(dc["note"])}</div></div>')
 
 
 def _warnings(warns) -> str:
@@ -124,6 +170,9 @@ def _readout(cards) -> str:
             disp = "——"
         else:
             disp = f'{c["value"]:.{3 if c["signal"] == "Learned structure" else 2}f}'
+        if c.get("sd") is not None:
+            disp += (f'<span style="font-size:14px;color:{C["mut"]}"> &#177; '
+                     f'{c["sd"]:.{3 if c["signal"] == "Learned structure" else 2}f}</span>')
         out += (
             f'<div style="margin-bottom:16px">'
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
@@ -210,6 +259,14 @@ def render_html(res: AutopsyResult, source: str = "") -> str:
 
   <div style="margin-top:14px">
     <section class="panel">
+      <div class="ptitle">METHOD CONTROLS &amp; DECLARED LIMITS</div>
+      {_descriptor(v.get('descriptor_control'))}
+      {_limitations(res.limitations)}
+    </section>
+  </div>
+
+  <div style="margin-top:14px">
+    <section class="panel">
       <div class="ptitle">SPECIMEN X-RAY</div>
       <div style="font-size:13px;color:{C['textDim']};margin-bottom:14px;line-height:1.55;max-width:900px">
         {s['n_singleton_series']} of {s['n_scaffold_series']} scaffold series appear only once. A random split scatters near-identical analogues across train and test — that is where an inflated random-split score comes from.
@@ -221,7 +278,7 @@ def render_html(res: AutopsyResult, source: str = "") -> str:
   </div>
 
   <div style="margin-top:16px;font-family:monospace;font-size:10.5px;color:{C['mut']};letter-spacing:.02em;line-height:1.7">
-    {html.escape(m['featurisation'])} · {html.escape(m['model'])} · {m['k_folds']}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED {m['seed']}
+    {html.escape(m['featurisation'])} · {html.escape(m['model'])} · {m['k_folds']}-FOLD · POOLED OOF R² · {m.get('repeats', 1)}&#215; REPEATED PARTITIONS (MEAN &#177; SD) · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · SIMILARITY SPLIT @ {m.get('similarity_cutoff', '')} (EXPERIMENTAL) · CONTROL {html.escape(str(m.get('control_featurisation', '')))} · PERMUTATION CONTROL · SEED {m['seed']}
   </div>
 </div>
 </body></html>"""

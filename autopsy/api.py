@@ -65,6 +65,10 @@ Deployment knobs, all environment variables, all safe by default:
                               3600.
     AUTOPSY_PAYWALL_ENABLED   put the engine behind a subscription again.
                               Default false. Read by autopsy/billing.py.
+    AUTOPSY_REPEATS           partitions per repeated rung, i.e. how the error
+                              bands are measured. Default 5; the audit is
+                              linear in it. 1 turns the bands off, and the
+                              result declares that it has none.
 
 Jobs live in this process's memory: they do not survive a restart and are
 not shared between replicas. That is the right trade for a single container
@@ -94,7 +98,7 @@ from pydantic import BaseModel, Field
 
 from . import billing, tiers
 from .billing import QuotaExhausted, require_subscription
-from .engine import run_autopsy, precheck, AutopsyError
+from .engine import run_autopsy, precheck, AutopsyError, REPEATS as engine_repeats
 from . import __version__
 
 app = FastAPI(title="ActarusLab · Model Autopsy", version=__version__)
@@ -107,6 +111,25 @@ MAX_ROWS = int(os.getenv("AUTOPSY_MAX_ROWS", "5000"))
 WORKERS = int(os.getenv("AUTOPSY_WORKERS", "1"))
 QUEUE_DEPTH = int(os.getenv("AUTOPSY_QUEUE_DEPTH", "8"))
 JOB_TTL = int(os.getenv("AUTOPSY_JOB_TTL", "3600"))
+
+
+def _repeats() -> int:
+    """Partitions per repeated rung, for this deployment.
+
+    The bands cost what they measure: the audit is linear in this, and five
+    partitions make a 1500-compound run about four times longer than one.
+    That is worth it by default — a rung quoted without its spread invites a
+    reader to compare two numbers that are not distinguishable — but a big
+    dataset on a small box is a real situation, so the trade is available and
+    named. Below 2 there is no spread to report and the result says so in its
+    declared limitations rather than quietly dropping the bands.
+
+    Read per request, like every other switch here.
+    """
+    try:
+        return max(1, int(os.getenv("AUTOPSY_REPEATS", str(engine_repeats))))
+    except ValueError:
+        return engine_repeats
 
 # Same-origin only unless told otherwise. The UI this app serves needs no
 # CORS at all, so an open policy would only ever widen the attack surface of
@@ -270,7 +293,7 @@ def autopsy_demo():
 def _run(df: pd.DataFrame, smiles: str, y: str, date: Optional[str], k: int):
     _check_size(df)
     try:
-        res = run_autopsy(df, smiles, y, date, k=k)
+        res = run_autopsy(df, smiles, y, date, k=k, repeats=_repeats())
     except AutopsyError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception:
@@ -390,7 +413,7 @@ def _work(job_id: str, df: pd.DataFrame, smiles: str, y: str,
         _jobs[job_id]["started"] = time.time()
 
     try:
-        res = run_autopsy(df, smiles, y, date, k=k, log=note)
+        res = run_autopsy(df, smiles, y, date, k=k, repeats=_repeats(), log=note)
         outcome = {"status": "done", "result": res.to_dict(), "progress": "complete"}
     except AutopsyError as e:
         outcome = {"status": "failed", "error": str(e), "progress": None}

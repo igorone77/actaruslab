@@ -14,7 +14,7 @@ on:
 jobs:
   bace-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -80,8 +80,8 @@ jobs:
           assert job["status"] == "done", job
           res = job["result"]
           assert res["tier"] == "full", res
-          assert set(res) == {"tier", "specimen", "ladder", "verdict",
-                              "readout", "warnings", "meta"}, sorted(res)
+          assert set(res) == {"tier", "specimen", "ladder", "verdict", "readout",
+                              "warnings", "meta", "limitations"}, sorted(res)
           assert res["specimen"]["n_compounds"] == 200, res["specimen"]
           assert {r["kind"] for r in res["ladder"]} >= {"reported", "lookup", "floor"}
           assert res["verdict"]["headline"]

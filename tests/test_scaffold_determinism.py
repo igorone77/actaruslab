@@ -112,13 +112,19 @@ def test_verdict_survives_row_permutation(csv, smiles_col, y_col):
     where the lookup baseline collapses on new scaffolds and the model really
     does learn beyond it. Opposite verdicts, same invariance.
     """
+    # repeats=2 rather than the default 5: rep 0 is the size-ordered
+    # deterministic partition and rep 1 is a seeded permutation, so both code
+    # paths that build a partition are exercised. Reps 2-4 are rep 1 with a
+    # different seed and would add three full audits per dataset to CI for no
+    # additional guarantee.
     df = pd.read_csv(csv)
-    base = run_autopsy(df, smiles_col, y_col, k=5, seed=0).verdict
+    base = run_autopsy(df, smiles_col, y_col, k=5, seed=0, repeats=2).verdict
     shuffled = run_autopsy(df.sample(frac=1.0, random_state=1).reset_index(drop=True),
-                           smiles_col, y_col, k=5, seed=0).verdict
+                           smiles_col, y_col, k=5, seed=0, repeats=2).verdict
 
     for key in ("reported", "lookup_random", "survives_scaffold", "lookup_scaffold",
-                "learned_beyond_lookup", "permutation_floor", "lookup_pct_of_reported"):
+                "learned_beyond_lookup", "permutation_floor", "lookup_pct_of_reported",
+                "reported_sd", "survives_scaffold_sd", "survives_similarity"):
         assert shuffled[key] == base[key], f"{key}: {base[key]} -> {shuffled[key]}"
 
 

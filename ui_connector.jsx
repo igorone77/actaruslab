@@ -233,6 +233,9 @@ export function flagColor(flag) {
   const C = {
     SEVERE: "#D65A4E", LEAK: "#D65A4E", ARTIFACT: "#D65A4E",
     MODERATE: "#E0B24D", PARTIAL: "#E0B24D", THIN: "#E0B24D", MARGINAL: "#E0B24D",
+    // Not a severity. The similarity rung is unvalidated, so it is painted
+    // apart from the scale rather than somewhere on it.
+    EXPERIMENTAL: "#9FB6C4",
     NET: "#7DE3E0", TESTED: "#7DE3E0",
     CLEAN: "#6FC49B", LOW: "#6FC49B",
     "N/A": "#54706F",

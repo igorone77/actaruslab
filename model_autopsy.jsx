@@ -15,33 +15,43 @@ import { useAutopsy, flagColor, engineHealth, subscriberKey, setSubscriberKey } 
 const DEMO = {
   source: "BACE-1 · CLEAN BENCHMARK — IN-HOUSE DATA COLLAPSES FURTHER",
   rungs: [
-    { key: "xgb_rand", label: "XGBoost", cond: "random split", r2: 0.709, rmse: 0.724, rho: 0.819, kind: "reported" },
-    { key: "nn_rand", label: "1-NN lookup", cond: "random split", r2: 0.572, rmse: 0.878, rho: 0.749, kind: "lookup" },
-    { key: "xgb_scaf", label: "XGBoost", cond: "scaffold split", r2: 0.597, rmse: 0.852, rho: 0.746, kind: "survives" },
-    { key: "nn_scaf", label: "1-NN lookup", cond: "scaffold split", r2: 0.451, rmse: 0.995, rho: 0.695, kind: "lookup" },
-    { key: "perm", label: "Permutation", cond: "shuffled target", r2: -0.222, rmse: 1.483, rho: 0.02, kind: "floor" },
+    { key: "xgb_rand", label: "XGBoost", cond: "random split", r2: 0.714, sd: 0.005, rmse: 0.717, rho: 0.823, kind: "reported" },
+    { key: "nn_rand", label: "1-NN lookup", cond: "random split", r2: 0.565, sd: 0.011, rmse: 0.885, rho: 0.746, kind: "lookup" },
+    { key: "xgb_scaf", label: "XGBoost", cond: "scaffold split", r2: 0.608, sd: 0.012, rmse: 0.84, rho: 0.752, kind: "survives" },
+    { key: "nn_scaf", label: "1-NN lookup", cond: "scaffold split", r2: 0.426, sd: 0.028, rmse: 1.016, rho: 0.682, kind: "lookup" },
+    { key: "xgb_sim", label: "XGBoost", cond: "similarity split", r2: 0.446, sd: null, rmse: 0.999, rho: 0.593, kind: "survives_similarity" },
+    { key: "perm", label: "Permutation", cond: "shuffled target", r2: -0.202, sd: null, rmse: 1.471, rho: 0.038, kind: "floor" },
   ],
-  reported: 0.709, lookupRand: 0.572, survives: 0.597, nnScaf: 0.451,
-  learned: 0.146,
-  lookupPct: 81,
+  reported: 0.714, lookupRand: 0.565, survives: 0.608,
+  nnScaf: 0.426, learned: 0.182,
+  reportedSd: 0.005, lookupRandSd: 0.011,
+  survivesSd: 0.012, learnedSd: 0.038,
+  survivesSim: 0.446,
+  lookupPct: 79,
   headline: null,          // demo keeps the hand-written verdict below
   warnings: [],            // the benchmark drops nothing
+  descriptor: {"available": true, "lookup_pct_ecfp": 80, "lookup_pct_alt": 77, "flag_ecfp": "SEVERE", "flag_alt": "SEVERE", "agree": true, "partition": "first random split", "note": "Two unrelated fingerprints agree: the lookup reproduces 80% of the reported score on ECFP4 and 77% on the RDKit path fingerprint, both reading SEVERE. The finding is a property of the dataset, not of the descriptor."},
+  limitations: [{"code": "no_time_split", "level": "severe", "title": "The most important test could not be run", "text": "No assay-date column was supplied, so the temporal generalisation test \u2014 the gold standard for prospective use in QSAR \u2014 was not executed on this dataset. Everything above measures generalisation to new chemistry, not generalisation forward in time; a model can pass every rung here and still fail on next quarter's compounds. For the most severe audit this tool can perform, supply the assay dates."}, {"code": "lookup_pct_not_standard", "level": "note", "title": "The \u201c% is lookup\u201d figure is ours, not a literature metric", "text": "It is lookup_random / reported: the fraction of the random-split score that a bare 1-NN Tanimoto lookup reproduces, expressed as a percentage. It is an ActarusLab interpretive indicator, not a standard QSAR statistic, and it has no external validation. Use it to compare rungs within one audit; do not quote it as a field-recognised measure."}, {"code": "similarity_split_experimental", "level": "note", "title": "The similarity split is experimental", "text": "Sphere-exclusion clustering on Tanimoto at a fixed cutoff, split so that training and test clusters are dissimilar. It is reported beside the scaffold split, not instead of it, because recent work finds Bemis-Murcko scaffold splits still optimistic. The cutoff is a convention and this protocol has not been externally validated: read it as a second severity level, not as the true floor, and have a domain expert confirm it before relying on the number."}],
   readout: [
-    { signal: "Similarity leakage", flag: "SEVERE", value_pct: 81,
-      note: "A bare nearest-neighbour lookup reproduces most of the headline. The score rewards recognising known analogues, not learned SAR." },
-    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.597,
-      note: "On disjoint chemical series the model holds 0.60 — real, but below the reported figure. This is what generalises to new chemistry." },
-    { signal: "Learned structure", flag: "THIN", value: 0.146,
+    { signal: "Similarity leakage", flag: "SEVERE", value_pct: 79,
+      note: "Share of the reported score a bare nearest-neighbour lookup reproduces — computed as lookup_random / reported. High means the model is rewarded for recognising known analogues. This is an ActarusLab interpretive indicator, not a standard QSAR metric, and it carries no external validation." },
+    { signal: "Scaffold transfer", flag: "PARTIAL", value: 0.608, sd: 0.012,
+      note: "Performance on genuinely new chemical series — what generalises beyond the training scaffolds." },
+    { signal: "Similarity transfer", flag: "EXPERIMENTAL", value: 0.446,
+      note: "Same model, split so training and test clusters sit below Tanimoto 0.4 of each other (129 clusters). Harsher than the scaffold split, because distinct scaffolds can still be near neighbours. Experimental and not externally validated — a second severity level, not a floor." },
+    { signal: "Learned structure", flag: "THIN", value: 0.182, sd: 0.038,
       note: "Scaffold performance minus the scaffold-split lookup. The only structure the model added beyond averaging its nearest analogues, and there is little of it." },
     { signal: "Temporal test", flag: "N/A", value: null,
-      note: "Benchmark carries no assay dates. On a real ChEMBL target this rung activates from document year — the split a random fold hides entirely." },
-    { signal: "Permutation floor", flag: "CLEAN", value: -0.222,
-      note: "Shuffled-target control collapses below zero. The pipeline itself is honest — no featurisation or splitting leak." },
+      note: "Not run: no assay dates in this file. This is the gold standard for prospective use, and its absence is a gap in the audit rather than a pass — see the declared limitations." },
+    { signal: "Permutation floor", flag: "CLEAN", value: -0.202,
+      note: "Shuffled-target control. Should collapse toward zero; anything well above signals a pipeline leak." },
   ],
-  specimen: { n_compounds: 1513, n_scaffold_series: 377, n_singleton_series: 200,
-              largest_series: 63, largest_series_pct: 4.2, target_mean: 6.522,
-              target_sd: 1.342, exact_duplicate_smiles: 0 },
-  meta: "ECFP4 · 2048 bit · XGBoost (400 trees, depth 6) · 5-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED 0",
+  specimen: { n_compounds: 1513, n_scaffold_series: 377,
+              n_singleton_series: 200,
+              largest_series: 63, largest_series_pct: 4.2,
+              target_mean: 6.522, target_sd: 1.342,
+              exact_duplicate_smiles: 0 },
+  meta: "ECFP4 · 2048 bit · XGBoost (400 trees, depth 6) · 5-FOLD · POOLED OOF R² · 5× REPEATED PARTITIONS (MEAN ± SD) · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · SIMILARITY SPLIT @ 0.4 (EXPERIMENTAL) · CONTROL RDKit topological · 2048 bit · PERMUTATION CONTROL · SEED 0",
 };
 
 // engine AutopsyResult -> the shape this page renders
@@ -51,13 +61,20 @@ function fromResult(res, source) {
     source: source.toUpperCase(),
     rungs: res.ladder.filter((r) => r.r2 !== null).map((r, i) => ({
       key: `${r.kind}-${i}`, label: r.model, cond: r.condition.split(" · ")[0],
-      r2: r.r2, rmse: r.rmse, rho: r.spearman, kind: r.kind,
+      r2: r.r2, sd: r.r2_sd ?? null, rmse: r.rmse, rho: r.spearman, kind: r.kind,
     })),
     reported: v.reported, lookupRand: v.lookup_random,
     survives: v.survives_scaffold, nnScaf: v.lookup_scaffold,
     learned: v.learned_beyond_lookup, lookupPct: v.lookup_pct_of_reported,
     headline: v.headline,
     readout: res.readout,
+    reportedSd: v.reported_sd ?? null,
+    lookupRandSd: v.lookup_random_sd ?? null,
+    survivesSd: v.survives_scaffold_sd ?? null,
+    learnedSd: v.learned_beyond_lookup_sd ?? null,
+    survivesSim: v.survives_similarity ?? null,
+    descriptor: v.descriptor_control ?? null,
+    limitations: res.limitations || [],
     warnings: res.warnings || [],
     specimen: res.specimen,
     meta: `${m.featurisation} · ${m.k_folds}-FOLD · POOLED OOF R² · DETERMINISTIC GROUPED FOLDS ON GENERIC SCAFFOLDS · TIE-AVERAGED TANIMOTO 1-NN · PERMUTATION CONTROL · SEED ${m.seed}`,
@@ -257,11 +274,18 @@ export default function ModelAutopsyNeutra() {
             )}
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 1, marginTop: 14, border: `1px solid ${C.edge}`, borderRadius: 8, overflow: "hidden", background: C.edge }}>
-              {[["REPORTED", num(D.reported), C.green], ["LOOKUP", num(D.lookupRand), C.red],
-                ["SURVIVES", num(D.survives), C.amber], ["LEARNED", num(D.learned, 3), C.cyan]].map(([k, v, t]) => (
+              {[["REPORTED", num(D.reported), D.reportedSd, 2, C.green],
+                ["LOOKUP", num(D.lookupRand), D.lookupRandSd, 2, C.red],
+                ["SURVIVES", num(D.survives), D.survivesSd, 2, C.amber],
+                ["LEARNED", num(D.learned, 3), D.learnedSd, 3, C.cyan]].map(([k, v, sd, dp, t]) => (
                 <div key={k} style={{ background: C.panel, padding: "11px 12px" }}>
                   <div style={{ fontFamily: sans, fontSize: 9.5, fontWeight: 600, letterSpacing: "0.14em", color: C.textDim, marginBottom: 5 }}>{k}</div>
                   <div style={{ fontFamily: mono, fontSize: 20, fontWeight: 500, color: t }}>{v}</div>
+                  {sd != null && (
+                    <div style={{ fontFamily: mono, fontSize: 11, color: C.mut, marginTop: 3 }}>
+                      ± {sd.toFixed(dp)}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -359,6 +383,39 @@ export default function ModelAutopsyNeutra() {
               const frac = c.value_pct != null ? c.value_pct / 100 : c.value == null ? 0 : Math.max(0.04, c.value / 0.78);
               return <Readout key={c.signal} head={c.signal.toUpperCase()} pill={<Pill tone={tone}>{c.flag}</Pill>}
                               value={value} tone={tone} frac={frac} note={c.note} />;
+            })}
+          </Panel>
+        </div>
+
+        {/* Controls and caveats sit with the numbers, not in a footnote. An
+            absent test that says nothing reads as a test that passed, which
+            is the most misleading thing a validation report can do. */}
+        <div style={{ marginTop: 14 }}>
+          <Panel title={bench("METHOD CONTROLS · DECLARED LIMITS")}>
+            {D.descriptor && (
+              <div style={{ marginBottom: 14, padding: "12px 15px", borderRadius: 8, background: C.panel,
+                border: `1px solid ${(!D.descriptor.available ? C.mut : D.descriptor.agree ? C.green : C.red)}44`,
+                borderLeft: `2px solid ${!D.descriptor.available ? C.mut : D.descriptor.agree ? C.green : C.red}` }}>
+                <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 600,
+                  color: !D.descriptor.available ? C.mut : D.descriptor.agree ? C.green : C.red }}>
+                  DESCRIPTOR CONTROL
+                </div>
+                <div style={{ fontFamily: sans, fontSize: 12.5, lineHeight: 1.55, color: C.textDim, marginTop: 6, maxWidth: 900 }}>
+                  {D.descriptor.note}
+                </div>
+              </div>
+            )}
+            {(D.limitations || []).map((l, i) => {
+              const tone = l.level === "severe" ? C.red : C.amber;
+              return (
+                <div key={i} style={{ marginBottom: 12, padding: "12px 15px", borderRadius: 8,
+                  background: C.panel, border: `1px solid ${tone}44`, borderLeft: `2px solid ${tone}` }}>
+                  <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 600, color: tone }}>{l.title}</div>
+                  <div style={{ fontFamily: sans, fontSize: 12.5, lineHeight: 1.55, color: C.textDim, marginTop: 6, maxWidth: 900 }}>
+                    {l.text}
+                  </div>
+                </div>
+              );
             })}
           </Panel>
         </div>
@@ -508,7 +565,8 @@ function LadderChart({ rungs, revealed, reported }) {
   const x = (i) => padL + i * stepX;
   const y = (r2) => padT + (1 - (r2 - lo) / (hi - lo)) * bandH;
   const gridlines = [0.75, 0.5, 0.25, 0, -0.25].filter((g) => g >= lo && g <= hi);
-  const colFor = (k) => k === "reported" ? C.green : k === "survives" ? C.amber : k === "floor" ? C.mut : C.red;
+  const colFor = (k) => k === "reported" ? C.green : k === "survives" ? C.amber
+    : k === "survives_similarity" ? C.ice : k === "floor" ? C.mut : C.red;
   const pts = rungs.slice(0, revealed).map((r, i) => `${x(i)},${y(r.r2)}`).join(" ");
   return (
     <div style={{ background: C.bg0, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "6px 4px" }}>
@@ -528,6 +586,19 @@ function LadderChart({ rungs, revealed, reported }) {
           const vx = i === 0 ? x(i) + 22 : x(i);
           return (
             <g key={r.key} style={{ animation: "np 0.4s ease" }}>
+              {/* the band, where the rung was measured over several
+                  partitions — drawn under the marker so the point stays the
+                  thing you read first */}
+              {r.sd != null && (
+                <g opacity="0.75">
+                  <line x1={x(i)} x2={x(i)} y1={y(r.r2 - r.sd)} y2={y(r.r2 + r.sd)}
+                        stroke={colFor(r.kind)} strokeWidth="1.5" />
+                  <line x1={x(i) - 5} x2={x(i) + 5} y1={y(r.r2 - r.sd)} y2={y(r.r2 - r.sd)}
+                        stroke={colFor(r.kind)} strokeWidth="1.5" />
+                  <line x1={x(i) - 5} x2={x(i) + 5} y1={y(r.r2 + r.sd)} y2={y(r.r2 + r.sd)}
+                        stroke={colFor(r.kind)} strokeWidth="1.5" />
+                </g>
+              )}
               <circle cx={x(i)} cy={y(r.r2)} r="9" fill="none" stroke={colFor(r.kind)} strokeWidth="1" opacity="0.4" />
               <circle cx={x(i)} cy={y(r.r2)} r="4.5" fill={colFor(r.kind)} stroke={C.bg0} strokeWidth="1.5" />
               <text x={vx} y={vy} textAnchor="middle" fontFamily={mono} fontSize="14" fontWeight="600" fill={colFor(r.kind)}>{r.r2.toFixed(2)}</text>

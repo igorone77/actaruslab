@@ -32,8 +32,87 @@ The headline numbers it extracts:
 - **temporal** — does it predict the *next* campaign, or ride historical trend
 - **permutation floor** — is the pipeline itself leaking
 
+Plus two controls and one experimental rung:
+
+- **similarity split** — split so training and test clusters sit below Tanimoto
+  0.40 of each other. Harsher than the scaffold split, because distinct
+  Bemis–Murcko cores can still be near neighbours. **Experimental.**
+- **descriptor control** — the lookup baseline recomputed on a second,
+  unrelated fingerprint, to show whether the verdict is a property of the
+  dataset or of ECFP4
+- **error bands** — random, lookup and scaffold rungs are each measured over
+  **5 different partitions** and reported as mean ± sd, so a gap between two
+  rungs can be told apart from the noise of where the folds fell
+
 Nothing is model magic: RDKit + scikit-learn + XGBoost do the numbers. The
 engine only decides how to *validate*, and reports what it finds.
+
+On BACE-1 (1513 compounds, k=5, 5 partitions, ~70 s):
+
+| rung | R² |
+|---|---|
+| XGBoost · random split | **0.714 ± 0.005** |
+| 1-NN lookup · random split | 0.565 ± 0.011 |
+| XGBoost · scaffold split | 0.608 ± 0.012 |
+| 1-NN lookup · scaffold split | 0.426 ± 0.028 |
+| XGBoost · similarity split *(experimental)* | 0.446 |
+| Permutation floor | −0.202 |
+
+The bands earn their cost immediately. The model's own contribution over the
+lookup reads **0.182 ± 0.038** — the single-partition audit reported 0.146 and
+quoted it to three decimals, which was a precision it had not measured. Both
+runs found the same thing; only one of them said so.
+
+## Limiti noti e scelte metodologiche
+
+### Known limits and methodological choices
+
+Stated here rather than discovered later. The audit itself repeats these next
+to the numbers they qualify — an absent test that says nothing reads as a test
+that passed.
+
+**The time split is the most important test, and it usually does not run.**
+Temporal generalisation is the gold standard for prospective use in QSAR, and
+it needs assay dates that benchmark datasets almost never carry. When there is
+no date column the rung is skipped and the report says so in as many words:
+everything else measures generalisation to *new chemistry*, not *forward in
+time*. A model can pass every rung here and still fail on next quarter's
+compounds. **We do not simulate dates.** For the most severe audit this tool
+can perform, supply them.
+
+**"X% is lookup" is our indicator, not a literature metric.** It is
+`lookup_random / reported` — the fraction of the random-split score a bare 1-NN
+Tanimoto lookup reproduces. It is useful for comparing rungs *within* one
+audit. It is not a standard QSAR statistic, it has no external validation, and
+it should not be quoted as a field-recognised measure. The definition is
+printed next to the number everywhere it appears.
+
+**The scaffold split is not a floor, and neither is the one below it.** Recent
+work finds Bemis–Murcko scaffold splits still optimistic: two cores can be
+formally distinct and sit next to each other in fingerprint space, so a
+scaffold-disjoint fold can still be full of near neighbours. The similarity
+split addresses that directly — sphere-exclusion clustering on Tanimoto at a
+fixed cutoff, train and test kept apart. It is reported **beside** the scaffold
+split, never instead of it, so you can see how much further the score falls.
+
+**It is experimental and has not been externally validated.** The 0.40 cutoff
+is a convention, not a measurement; sphere exclusion is one clustering choice
+among several; and the protocol has not been reviewed against published
+practice. Read it as a second severity level, not as the true floor, and have
+a domain expert confirm it before relying on the number.
+
+**Error bands are across partitions, not across everything.** They measure
+sensitivity to *where the fold boundaries fall* — five scaffold-disjoint or
+random partitions of the same molecules. They do not capture uncertainty from
+the choice of model, the featurisation, the activity measurements themselves,
+or the dataset's composition. The permutation floor and the temporal rung are
+single-partition, because repeating them costs more than the spread would tell
+you.
+
+**The engine has one model and one featurisation.** XGBoost on ECFP4. The
+descriptor control checks whether the *headline* survives a second fingerprint,
+but the ladder itself is not re-run under other descriptors or other learners,
+so "what a different pipeline would find" is outside what this measures.
 
 ### What an audit gives back
 
@@ -413,6 +492,7 @@ rather than a code edit:
 | `AUTOPSY_QUEUE_DEPTH` | `8` | jobs allowed to wait; beyond it, submits get 429 |
 | `AUTOPSY_JOB_TTL` | `3600` | seconds a finished job stays readable |
 | `AUTOPSY_PAYWALL_ENABLED` | `false` | may an audit run without paying. `true` restores the €199/month paywall in full, and then requires `STRIPE_SECRET_KEY`, or the service answers 503 rather than serving free audits from a deployment that believes it is charging. |
+| `AUTOPSY_REPEATS` | `5` | partitions per repeated rung — how the error bands are measured. The audit is linear in it: five partitions make a 1500-compound run about four times longer than one. `1` turns the bands off and the result declares that it has none. |
 | `AUTOPSY_VERDICT_ONLY` | `false` | what an audit hands back to someone without a subscription. `false` is the whole diagnosis; `true` is the inflation percentage and an address to write to. Independent of the paywall flag. |
 
 **The audit runs off the request.** It has to: measured here, 1513 compounds
